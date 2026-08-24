@@ -6,15 +6,17 @@ import re
 import string
 import subprocess
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 DESCRIPTOR_NAME = "autodev.toml"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SUPPORTED_PROVIDERS = frozenset({"codex", "claude"})
 DEFAULT_SESSION_PATTERN = "autodev-{project}-{agent}"
 DEFAULT_UI_PORT = 8765
+DEFAULT_MAX_CONCURRENT = 4
+ROLE_SHAPES = frozenset({"research", "contract-first", "reconcile"})
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -39,6 +41,21 @@ class AgentConfig:
     goal: str
     write_roots: tuple[str, ...]
     read_roots: tuple[str, ...]
+    pod: str | None = None
+
+
+@dataclass(frozen=True)
+class RoleConfig:
+    id: str
+    shape: str
+    charter: str
+
+
+@dataclass(frozen=True)
+class LoopConfig:
+    sequence: tuple[str, ...]
+    reenter_product_manager_when: tuple[str, ...]
+    max_concurrent: int
 
 
 @dataclass(frozen=True)
@@ -56,6 +73,8 @@ class ProjectConfig:
     bypass_permissions: bool
     providers: dict[str, ProviderConfig]
     agents: tuple[AgentConfig, ...]
+    loop: LoopConfig | None = None
+    roles: dict[str, RoleConfig] = field(default_factory=dict)
 
     def agent(self, agent_id: str) -> AgentConfig:
         for agent in self.agents:
@@ -86,6 +105,12 @@ def _optional_string(value: Any, label: str) -> str | None:
 def _ui_port(value: Any) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not 1024 <= value <= 65535:
         raise ConfigError("runtime.ui_port must be an integer from 1024 through 65535")
+    return value
+
+
+def _positive_int(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ConfigError(f"{label} must be a positive integer")
     return value
 
 
@@ -217,6 +242,37 @@ def descriptor_path(value: str | Path | None = None, *, cwd: Path | None = None)
     raise ConfigError(f"no {DESCRIPTOR_NAME} found at or above {current}")
 
 
+def _parse_roles(data: Any) -> dict[str, RoleConfig]:
+    roles_data = _table(data, "[roles]")
+    roles: dict[str, RoleConfig] = {}
+    for raw_id, raw in roles_data.items():
+        role_id = _id(raw_id, f"roles.{raw_id}")
+        table = _table(raw, f"[roles.{role_id}]")
+        shape = _nonempty_string(table.get("shape"), f"roles.{role_id}.shape")
+        if shape not in ROLE_SHAPES:
+            raise ConfigError(f"roles.{role_id}.shape must be one of {', '.join(sorted(ROLE_SHAPES))}; got {shape!r}")
+        charter = _nonempty_string(table.get("charter"), f"roles.{role_id}.charter")
+        unknown = sorted(set(table) - {"shape", "charter"})
+        if unknown:
+            raise ConfigError(f"[roles.{role_id}] has unknown field(s): {', '.join(unknown)}")
+        roles[role_id] = RoleConfig(id=role_id, shape=shape, charter=charter)
+    return roles
+
+
+def _parse_loop(data: Any, roles: dict[str, RoleConfig]) -> LoopConfig:
+    table = _table(data, "[loop]")
+    unknown = sorted(set(table) - {"sequence", "reenter_product_manager_when", "max_concurrent"})
+    if unknown:
+        raise ConfigError(f"[loop] has unknown field(s): {', '.join(unknown)}")
+    sequence = _string_list(table.get("sequence", []), "loop.sequence")
+    for role in sequence:
+        if role not in roles:
+            raise ConfigError(f"loop.sequence entry {role!r} is not a configured [roles.*]")
+    reenter = _string_list(table.get("reenter_product_manager_when", []), "loop.reenter_product_manager_when")
+    max_concurrent = _positive_int(table.get("max_concurrent", DEFAULT_MAX_CONCURRENT), "loop.max_concurrent")
+    return LoopConfig(sequence=sequence, reenter_product_manager_when=reenter, max_concurrent=max_concurrent)
+
+
 def load_project(value: str | Path | None = None, *, cwd: Path | None = None) -> ProjectConfig:
     descriptor = descriptor_path(value, cwd=cwd)
     try:
@@ -276,6 +332,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         provider = _nonempty_string(raw.get("provider"), f"agents[{index}].provider")
         if provider not in SUPPORTED_PROVIDERS:
             raise ConfigError(f"agents[{index}].provider must be one of {', '.join(sorted(SUPPORTED_PROVIDERS))}")
+        pod = raw.get("pod")
         agents.append(
             AgentConfig(
                 id=agent_id,
@@ -284,6 +341,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
                 goal=_nonempty_string(raw.get("goal"), f"agents[{index}].goal"),
                 write_roots=_roots(raw.get("write_roots"), f"agents[{index}].write_roots", allow_empty=False),
                 read_roots=_roots(raw.get("read_roots", []), f"agents[{index}].read_roots"),
+                pod=_id(pod, f"agents[{index}].pod") if pod is not None else None,
             )
         )
 
@@ -291,6 +349,9 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
     _validate_ownership(result_agents)
     for agent in result_agents:
         render_session_name(session_pattern, project_id, agent)
+
+    roles = _parse_roles(data.get("roles", {}))
+    loop = _parse_loop(data["loop"], roles) if "loop" in data else None
     return ProjectConfig(
         id=project_id,
         name=name,
@@ -305,4 +366,6 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         bypass_permissions=bypass_permissions,
         providers=providers,
         agents=result_agents,
+        loop=loop,
+        roles=roles,
     )

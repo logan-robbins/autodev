@@ -5,11 +5,36 @@ from pathlib import Path
 import pytest
 
 from autodev.config import (
+    SCHEMA_VERSION,
     ConfigError,
     descriptor_path,
     load_project,
     render_session_name,
 )
+
+_SCHEMA_3_TABLES = """
+[loop]
+sequence = ["project-manager", "engineering", "project-manager"]
+reenter_product_manager_when = ["new-requirement", "queues-exhausted"]
+max_concurrent = 3
+
+[roles.product-manager]
+shape = "research"
+charter = "Own a Pillar; emit Features."
+
+[roles.project-manager]
+shape = "reconcile"
+charter = "Own a Feature; split into leaves."
+
+[roles.engineering]
+shape = "contract-first"
+charter = "Own a Leaf; red tests first."
+"""
+
+
+def _add_tables(project_repo: Path, tables: str) -> None:
+    descriptor = project_repo / "autodev.toml"
+    descriptor.write_text(descriptor.read_text(encoding="utf-8") + tables, encoding="utf-8")
 
 
 def test_loads_single_file_project_contract(project_repo: Path) -> None:
@@ -121,6 +146,76 @@ def test_rejects_invalid_project_ui_port(project_repo: Path, port: object) -> No
     )
 
     with pytest.raises(ConfigError, match="runtime.ui_port"):
+        load_project(project_repo)
+
+
+# --- B1: schema 3 ------------------------------------------------------------
+
+
+def test_schema_version_is_three() -> None:
+    assert SCHEMA_VERSION == 3
+
+
+def test_bare_schema_3_still_loads(project_repo: Path) -> None:
+    # A descriptor with no [loop]/[roles.*]/pod is valid: the tables are additive.
+    project = load_project(project_repo)
+    assert project.loop is None
+    assert project.roles == {}
+    assert project.agent("backend").pod is None
+
+
+def test_loads_loop_roles_and_pod(project_repo: Path) -> None:
+    _add_tables(project_repo, _SCHEMA_3_TABLES)
+    descriptor = project_repo / "autodev.toml"
+    descriptor.write_text(
+        descriptor.read_text(encoding="utf-8").replace(
+            'provider = "codex"',
+            'provider = "codex"\npod = "backend"',
+        ),
+        encoding="utf-8",
+    )
+    project = load_project(project_repo)
+
+    assert project.loop is not None
+    assert project.loop.sequence == ("project-manager", "engineering", "project-manager")
+    assert project.loop.max_concurrent == 3
+    assert project.roles["engineering"].shape == "contract-first"
+    assert project.roles["product-manager"].charter.startswith("Own a Pillar")
+    assert project.agent("backend").pod == "backend"
+
+
+def test_rejects_schema_two(project_repo: Path) -> None:
+    descriptor = project_repo / "autodev.toml"
+    descriptor.write_text(
+        descriptor.read_text(encoding="utf-8").replace("schema_version = 3", "schema_version = 2"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="schema_version must be 3"):
+        load_project(project_repo)
+
+
+def test_rejects_bad_role_shape(project_repo: Path) -> None:
+    _add_tables(project_repo, '\n[roles.designer]\nshape = "vibes"\ncharter = "make it pretty"\n')
+    with pytest.raises(ConfigError, match="roles.designer.shape"):
+        load_project(project_repo)
+
+
+def test_rejects_loop_sequence_entry_without_role(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        '\n[loop]\nsequence = ["ghost-role"]\n\n[roles.engineering]\nshape = "contract-first"\ncharter = "x"\n',
+    )
+    with pytest.raises(ConfigError, match="loop.sequence entry 'ghost-role' is not a configured"):
+        load_project(project_repo)
+
+
+def test_rejects_non_positive_max_concurrent(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        '\n[roles.engineering]\nshape = "contract-first"\ncharter = "x"\n'
+        '\n[loop]\nsequence = ["engineering"]\nmax_concurrent = 0\n',
+    )
+    with pytest.raises(ConfigError, match="loop.max_concurrent must be a positive integer"):
         load_project(project_repo)
 
 

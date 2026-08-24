@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from autodev.config import SCHEMA_VERSION
+
 
 @dataclass(frozen=True)
 class DescriptorAgent:
@@ -39,7 +41,7 @@ def render_full_descriptor(
     provider_settings: dict[str, dict[str, str | None]] | None = None,
 ) -> str:
     lines = [
-        "schema_version = 2",
+        f"schema_version = {SCHEMA_VERSION}",
         "",
         "[project]",
         f"id = {_toml_string(project_id)}",

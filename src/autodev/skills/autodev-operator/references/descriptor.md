@@ -1,9 +1,9 @@
 # Project Descriptor Contract
 
-Create `autodev.toml` at the managed repository's Git root. Schema 2 requires every field shown here. Provider tables are optional; each omitted provider setting uses that installed CLI's local default.
+Create `autodev.toml` at the managed repository's Git root. Schema 3 requires every field shown here. Provider tables are optional; each omitted provider setting uses that installed CLI's local default. The `[loop]`, `[roles.*]`, and agent `pod` tables are optional and additive — a descriptor with none of them still loads.
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [project]
 id = "project-id"
@@ -31,11 +31,37 @@ effort = "high"
 [[agents]]
 id = "backend"
 provider = "codex"
+pod = "backend"
 purpose = "Own the backend service and its tests."
 goal = "Take the highest-priority actionable backend task and complete one verified vertical change."
 write_roots = ["src/backend/", "tests/backend/"]
 read_roots = ["src/shared/"]
 ```
+
+## Optional schema-3 tables
+
+```toml
+[loop]
+sequence = ["project-manager", "engineering", "project-manager"]
+reenter_product_manager_when = ["new-requirement", "queues-exhausted", "roadmap-contradiction"]
+max_concurrent = 4
+
+[roles.product-manager]
+shape = "research"
+charter = "Own a Pillar. Extract facts; rank recency x relevance; emit the Pillar's Features."
+
+[roles.project-manager]
+shape = "reconcile"
+charter = "Own a Feature. Split into complete leaves; emit depends_on edges."
+
+[roles.engineering]
+shape = "contract-first"
+charter = "Own a Leaf. Interfaces + red tests before internals."
+```
+
+- `[roles.<id>].shape` is one of `research`, `contract-first`, `reconcile`; `charter` is non-empty.
+- Every `[loop].sequence` entry must name a configured `[roles.*]`. `max_concurrent` is a positive integer.
+- Agent `pod` groups agents for role assignment; it uses the same id rules as agent ids.
 
 ## Constraints
 
