@@ -127,3 +127,33 @@ def test_read_events_since_cursor(tmp_path: Path) -> None:
 
 def test_read_events_missing_dir_is_empty(tmp_path: Path) -> None:
     assert read_events(tmp_path / "absent") == []
+
+
+def test_emit_assigns_monotonic_seq(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "r1"
+    first = trace.emit(run_dir, _run_started())
+    second = trace.emit(run_dir, new_event("run_finished", status="done"))
+    assert (first, second) == (1, 2)
+
+    lines = (run_dir / trace.EVENTS_FILENAME).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+
+
+def test_emit_round_trips_through_read_events(tmp_path: Path) -> None:
+    run_dir = tmp_path / "r"
+    trace.emit(run_dir, _run_started())
+    trace.emit(
+        run_dir,
+        new_event("step_finished", step_id="s1", status="green", output_artifacts=[], tokens=10),
+    )
+    events = read_events(run_dir)
+    assert [e["seq"] for e in events] == [1, 2]
+    assert events[0]["type"] == "run_started"
+    assert events[1]["tokens"] == 10
+
+
+def test_emit_continues_seq_after_reload(tmp_path: Path) -> None:
+    run_dir = tmp_path / "r"
+    trace.emit(run_dir, _run_started())
+    # A fresh call (as a new process would) keeps the sequence monotonic.
+    assert trace.emit(run_dir, new_event("run_finished", status="done")) == 2

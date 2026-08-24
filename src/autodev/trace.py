@@ -10,6 +10,7 @@ hook-config that makes workers emit — reads this one shape.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,3 +144,30 @@ def read_events(run_dir: Path, *, since: int = 0) -> list[dict[str, Any]]:
         if int(event.get("seq", 0)) > since:
             events.append(event)
     return events
+
+
+def _next_seq(run_dir: Path) -> int:
+    highest = 0
+    for event in read_events(run_dir):
+        highest = max(highest, int(event.get("seq", 0)))
+    return highest + 1
+
+
+def emit(run_dir: Path, event: Mapping[str, Any]) -> int:
+    """Append one validated event line and return its monotonic ``seq``.
+
+    A run has a single writer (one agent's pass), so the sequence is assigned by
+    reading the current maximum and incrementing — no lock is needed. The line
+    is flushed and fsync'd so a crash cannot leave a torn trace.
+    """
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    seq = _next_seq(run_dir)
+    stamped = validate_event({**event, "seq": seq})
+    line = json.dumps(stamped, ensure_ascii=False) + "\n"
+    path = run_dir / EVENTS_FILENAME
+    with open(path, "a", encoding="utf-8") as stream:
+        stream.write(line)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return seq
