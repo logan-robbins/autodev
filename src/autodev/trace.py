@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -171,3 +172,183 @@ def emit(run_dir: Path, event: Mapping[str, Any]) -> int:
         stream.flush()
         os.fsync(stream.fileno())
     return seq
+
+
+@dataclass(frozen=True)
+class StageNode:
+    step_id: str
+    kind: str
+    status: str  # declared | running | done | failed  (verify -> red | green)
+    parent: str | None
+    inputs: tuple[str, ...]  # -> edges; fan-in when more than one resolves
+    agent: str | None
+    agent_type: str | None
+    tokens: int | None
+    gloss: str | None
+    artifacts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RunView:
+    run_id: str
+    role: str
+    node_ref: dict
+    status: str  # running | done | failed
+    nodes: tuple[StageNode, ...]  # topologically ordered
+    edges: tuple[tuple[str, str], ...]
+    metrics: dict
+    active_step_id: str | None
+
+
+@dataclass
+class _WorkingNode:
+    step_id: str
+    kind: str
+    status: str
+    parent: str | None
+    inputs: tuple[str, ...]
+    agent: str | None = None
+    agent_type: str | None = None
+    tokens: int | None = None
+    gloss: str | None = None
+    artifacts: list[str] = field(default_factory=list)
+
+
+def _topo_order(step_ids: list[str], edges: list[tuple[str, str]]) -> list[str]:
+    """Kahn's algorithm; declaration order breaks ties and survives cycles."""
+    position = {step_id: index for index, step_id in enumerate(step_ids)}
+    indegree = {step_id: 0 for step_id in step_ids}
+    successors: dict[str, list[str]] = {step_id: [] for step_id in step_ids}
+    for src, dst in edges:
+        if src in indegree and dst in indegree:
+            successors[src].append(dst)
+            indegree[dst] += 1
+    ready = sorted((s for s in step_ids if indegree[s] == 0), key=position.get)
+    ordered: list[str] = []
+    while ready:
+        current = ready.pop(0)
+        ordered.append(current)
+        for successor in successors[current]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                ready.append(successor)
+        ready.sort(key=position.get)
+    if len(ordered) != len(step_ids):  # cycle: keep the rest in declaration order
+        ordered.extend(s for s in step_ids if s not in set(ordered))
+    return ordered
+
+
+def to_dag(events: Iterable[Mapping[str, Any]]) -> RunView:
+    """Fold a run's events into a ``RunView`` (Layer 1: pure, replay-stable).
+
+    Stage steps (``kind`` != ``tool``) become nodes; every ``tool`` step folds
+    into ``metrics.tool_calls`` only. Edges derive from each step's ``inputs``,
+    resolved against prior step ids and artifact ids — more than one resolved
+    input is a fan-in, one source feeding several is a fan-out.
+    """
+    ordered_events = sorted(events, key=lambda e: int(e.get("seq", 0)))
+    run_id = ""
+    role = ""
+    node_ref: dict = {}
+    run_status = "running"
+    metrics = {"tool_calls": 0, "tokens": 0}
+
+    nodes: dict[str, _WorkingNode] = {}
+    tool_steps: set[str] = set()
+    artifact_producer: dict[str, str] = {}
+    started_order: list[str] = []
+
+    for event in ordered_events:
+        kind = event.get("type")
+        if kind == "run_started":
+            run_id = event["run_id"]
+            role = event["role"]
+            node_ref = dict(event["node_ref"])
+        elif kind == "run_finished":
+            run_status = event["status"]
+        elif kind == "step_declared":
+            step_id = event["step_id"]
+            if event["kind"] == "tool":
+                tool_steps.add(step_id)
+                metrics["tool_calls"] += 1
+                continue
+            nodes[step_id] = _WorkingNode(
+                step_id=step_id,
+                kind=event["kind"],
+                status="declared",
+                parent=event.get("parent"),
+                inputs=tuple(event["inputs"]),
+                agent=event.get("agent"),
+            )
+        elif kind == "step_started":
+            step_id = event["step_id"]
+            if step_id in nodes:
+                node = nodes[step_id]
+                node.status = "running"
+                node.agent = event.get("agent", node.agent)
+                node.agent_type = event.get("agent_type", node.agent_type)
+                started_order.append(step_id)
+        elif kind == "artifact_written":
+            artifact_id = event["artifact_id"]
+            artifact_producer.setdefault(artifact_id, event["step_id"])
+            node = nodes.get(event["step_id"])
+            if node is not None:
+                node.artifacts.append(artifact_id)
+        elif kind == "step_finished":
+            step_id = event["step_id"]
+            tokens = event.get("tokens")
+            if isinstance(tokens, int) and not isinstance(tokens, bool):
+                metrics["tokens"] += tokens
+            for artifact_id in event.get("output_artifacts", []):
+                artifact_producer.setdefault(artifact_id, step_id)
+            if step_id in tool_steps:
+                continue
+            node = nodes.get(step_id)
+            if node is not None:
+                node.status = event["status"]
+                node.tokens = tokens
+                node.gloss = event.get("gloss")
+                node.artifacts.extend(a for a in event.get("output_artifacts", []) if a not in node.artifacts)
+
+    edges: list[tuple[str, str]] = []
+    seen_edges: set[tuple[str, str]] = set()
+    for node in nodes.values():
+        for source in node.inputs:
+            src_step = source if source in nodes else artifact_producer.get(source)
+            if src_step is None or src_step == node.step_id or src_step not in nodes:
+                continue
+            edge = (src_step, node.step_id)
+            if edge not in seen_edges:
+                seen_edges.add(edge)
+                edges.append(edge)
+
+    order = _topo_order(list(nodes), edges)
+    frozen_nodes = tuple(
+        StageNode(
+            step_id=n.step_id,
+            kind=n.kind,
+            status=n.status,
+            parent=n.parent,
+            inputs=n.inputs,
+            agent=n.agent,
+            agent_type=n.agent_type,
+            tokens=n.tokens,
+            gloss=n.gloss,
+            artifacts=tuple(n.artifacts),
+        )
+        for n in (nodes[step_id] for step_id in order)
+    )
+
+    running = [step_id for step_id in started_order if nodes[step_id].status == "running"]
+    active_step_id = running[-1] if running else None
+
+    return RunView(
+        run_id=run_id,
+        role=role,
+        node_ref=node_ref,
+        status=run_status,
+        nodes=frozen_nodes,
+        edges=tuple(edges),
+        metrics=metrics,
+        active_step_id=active_step_id,
+    )

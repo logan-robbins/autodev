@@ -157,3 +157,157 @@ def test_emit_continues_seq_after_reload(tmp_path: Path) -> None:
     trace.emit(run_dir, _run_started())
     # A fresh call (as a new process would) keeps the sequence monotonic.
     assert trace.emit(run_dir, new_event("run_finished", status="done")) == 2
+
+
+# --- A3: to_dag reducer -------------------------------------------------------
+# These fold tests omit seq and rely on to_dag's stable sort preserving list
+# order, so causal order is exactly the list order.
+
+
+def _step(step_id: str, kind: str, *, inputs=(), parent=None) -> list[dict]:
+    return [
+        new_event(
+            "step_declared",
+            step_id=step_id,
+            parent=parent,
+            kind=kind,
+            objective=f"{kind} {step_id}",
+            inputs=list(inputs),
+            expects="something",
+            done_when="asserted",
+            agent="pm",
+        ),
+        new_event("step_started", step_id=step_id, agent="pm", agent_type=kind, provider="claude"),
+    ]
+
+
+def _finish(step_id: str, *, status="done", tokens=10, outputs=()) -> dict:
+    return new_event(
+        "step_finished",
+        step_id=step_id,
+        status=status,
+        output_artifacts=list(outputs),
+        tokens=tokens,
+    )
+
+
+def _pm_research_events() -> list[dict]:
+    """plan -> {search1, search2} -> synthesize: fan-out then fan-in.
+
+    ``synth`` is declared and started but not finished, so it is the running
+    node the UI should default to.
+    """
+    events = [
+        new_event(
+            "run_started",
+            run_id="pm-1",
+            role="product-manager",
+            node_ref={"level": "pillar", "pillar": "replay-engine"},
+            goal="expand",
+        )
+    ]
+    events += _step("plan", "plan")
+    events.append(_finish("plan"))
+    events += _step("search1", "search", inputs=["plan"])
+    events += _step("search2", "search", inputs=["plan"])
+    events.append(_finish("search1", outputs=["facts1"]))
+    events.append(_finish("search2", outputs=["facts2"]))
+    events += _step("synth", "reconcile", inputs=["facts1", "facts2"])
+    return events
+
+
+def test_to_dag_shows_fan_out_and_fan_in() -> None:
+    view = trace.to_dag(_pm_research_events())
+    edges = set(view.edges)
+    # fan-out: plan feeds both searches.
+    assert ("plan", "search1") in edges
+    assert ("plan", "search2") in edges
+    # fan-in: both searches (via their facts artifacts) feed synth.
+    assert ("search1", "synth") in edges
+    assert ("search2", "synth") in edges
+    fan_in = [dst for _src, dst in view.edges].count("synth")
+    fan_out = [src for src, _dst in view.edges].count("plan")
+    assert fan_in == 2
+    assert fan_out == 2
+
+
+def test_to_dag_active_step_is_the_running_node() -> None:
+    view = trace.to_dag(_pm_research_events())
+    assert view.active_step_id == "synth"
+    synth = next(n for n in view.nodes if n.step_id == "synth")
+    assert synth.status == "running"
+
+
+def test_to_dag_folds_non_stage_tools_into_tool_calls() -> None:
+    events = [_run_started()]
+    events += _step("impl", "implement")
+    events.append(
+        new_event(
+            "step_declared",
+            step_id="grep-1",
+            parent=None,
+            kind="tool",
+            objective="grep",
+            inputs=[],
+            expects="matches",
+            done_when="done",
+            agent="eng",
+        )
+    )
+    events.append(_finish("grep-1", tokens=5))
+    events.append(_finish("impl", tokens=0))
+    view = trace.to_dag(events)
+    assert [n.step_id for n in view.nodes] == ["impl"]
+    assert view.metrics["tool_calls"] == 1
+    # tool tokens still count toward the run total.
+    assert view.metrics["tokens"] == 5
+
+
+def test_to_dag_is_deterministic_on_replay() -> None:
+    events = _pm_research_events()
+    first = trace.to_dag(events)
+    second = trace.to_dag(list(events))
+    assert first == second
+
+
+def test_to_dag_engineering_contract_first_shape() -> None:
+    events = [
+        new_event(
+            "run_started",
+            run_id="eng-1",
+            role="engineering",
+            node_ref={"level": "leaf", "pillar": "p", "feature": "f", "leaf": "store"},
+            goal="build",
+        )
+    ]
+    events += _step("contract", "contract")
+    events.append(_finish("contract", outputs=["iface"]))
+    events += _step("impl-a", "implement", inputs=["iface"])
+    events += _step("impl-b", "implement", inputs=["iface"])
+    events.append(_finish("impl-a"))
+    events.append(_finish("impl-b"))
+    events += _step("integrate", "integrate", inputs=["impl-a", "impl-b"])
+    events.append(_finish("integrate", status="green"))
+    events.append(new_event("run_finished", status="done"))
+
+    view = trace.to_dag(events)
+    assert view.status == "done"
+    assert ("contract", "impl-a") in view.edges
+    assert ("contract", "impl-b") in view.edges  # fan-out
+    assert ("impl-a", "integrate") in view.edges
+    assert ("impl-b", "integrate") in view.edges  # fan-in
+    # topological order: contract before its consumers before the integrator.
+    order = [n.step_id for n in view.nodes]
+    assert order.index("contract") < order.index("impl-a") < order.index("integrate")
+    integrate_node = next(n for n in view.nodes if n.step_id == "integrate")
+    assert integrate_node.status == "green"
+
+
+def test_to_dag_folds_persisted_events_jsonl(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "pm-1"
+    for event in _pm_research_events():
+        trace.emit(run_dir, {k: v for k, v in event.items() if k != "seq"})
+    view = trace.to_dag(read_events(run_dir))
+    assert ("plan", "search1") in view.edges
+    assert ("search1", "synth") in view.edges
+    assert view.active_step_id == "synth"
