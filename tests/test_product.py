@@ -9,10 +9,16 @@ from autodev import trace
 from autodev.config import load_project
 from autodev.product import (
     ProductError,
+    add_features,
+    decompose_feature,
     derive_phase,
     enumerate_tree,
     join_run,
     load_leaf,
+    set_approval,
+    set_leaf_status,
+    set_loop_state,
+    set_run_ref,
     validate_feature,
     validate_leaf,
 )
@@ -274,3 +280,90 @@ def test_join_run_embeds_live_run_and_unmet_edges(product_tree: Path, tmp_path: 
     import json as _json
 
     _json.dumps(view.as_dict())
+
+
+# --- B4: typed state-mutation actions ----------------------------------------
+
+
+def _new_feature(feature_id: str, *, approval: str = "proposed") -> dict:
+    return {
+        "id": feature_id,
+        "pillar": "replay-engine",
+        "name": feature_id.replace("-", " ").title(),
+        "approval": approval,
+        "loop": [
+            {"role": "product-manager", "s": "done"},
+            {"role": "project-manager", "s": "pending"},
+            {"role": "engineering", "s": "pending"},
+        ],
+        "run_ref": None,
+        "leaves": [],
+    }
+
+
+def test_add_features_writes_valid_feature_json(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    paths = add_features(project, "replay-engine", [_new_feature("cold-storage")])
+
+    assert paths[0].is_file()
+    tree = enumerate_tree(project)
+    assert tree.feature("cold-storage")["approval"] == "proposed"
+
+
+def test_add_features_rejects_invalid_payload_before_writing(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    bad = _new_feature("bad-one")
+    bad["approval"] = "maybe"
+    with pytest.raises(ProductError):
+        add_features(project, "replay-engine", [_new_feature("good-one"), bad])
+    features = product_tree / "product" / "pillars" / "replay-engine" / "features"
+    assert not (features / "good-one").exists()  # nothing written on a bad batch
+
+
+def test_decompose_feature_writes_leaves_and_links_them(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    add_features(project, "replay-engine", [_new_feature("cold-storage")])
+    leaves = [
+        {"id": "index", "feature": "cold-storage", "status": "pending", "depends_on": []},
+        {"id": "writer", "feature": "cold-storage", "status": "pending", "depends_on": ["index"]},
+    ]
+    decompose_feature(project, "cold-storage", leaves)
+
+    feature = enumerate_tree(project).feature("cold-storage")
+    assert [link["id"] for link in feature["leaves"]] == ["index", "writer"]
+    assert load_leaf(project, "cold-storage", "leaves/writer/leaf.json")["depends_on"] == ["index"]
+
+
+def test_decompose_rejects_dependency_on_non_sibling(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    add_features(project, "replay-engine", [_new_feature("cold-storage")])
+    with pytest.raises(ProductError, match="not a sibling leaf"):
+        decompose_feature(
+            project,
+            "cold-storage",
+            [{"id": "writer", "feature": "cold-storage", "status": "pending", "depends_on": ["ghost"]}],
+        )
+
+
+def test_set_leaf_status_updates_atomically(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    set_leaf_status(project, "certified-l3-book", "bucket", "verified")
+    assert load_leaf(project, "certified-l3-book", "leaves/bucket/leaf.json")["status"] == "verified"
+
+
+def test_set_run_ref_and_approval_and_loop_state(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    set_run_ref(project, "fast-ingest", "ingest-3")
+    set_approval(project, "fast-ingest", "approved")
+    set_loop_state(project, "fast-ingest", "project-manager", "active")
+
+    feature = enumerate_tree(project).feature("fast-ingest")
+    assert feature["run_ref"] == "runs/ingest-3"
+    assert feature["approval"] == "approved"
+    assert derive_phase(feature) == ("project-manager", "project-manager")
+
+
+def test_set_loop_state_rejects_unknown_role(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    with pytest.raises(ProductError, match="no role"):
+        set_loop_state(project, "fast-ingest", "designer", "active")

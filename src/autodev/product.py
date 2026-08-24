@@ -16,14 +16,14 @@ here so the schema is validated at the boundary, the way ``config.py`` validates
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from autodev import trace
 from autodev.config import _ID_RE, ProjectConfig
-from autodev.state import project_paths
+from autodev.state import atomic_write_text, project_paths
 
 PRODUCT_ROOT = ("product", "pillars")
 
@@ -342,3 +342,117 @@ def join_run(project: ProjectConfig, feature: Mapping[str, Any]) -> FeatureView:
         leaves=leaves,
         unmet_depends_on=unmet,
     )
+
+
+# --- B4: typed state-mutation actions -----------------------------------------
+# The only sanctioned way to change the tree (decision #3). Each validates
+# against the C-2 schema and writes atomically, so a malformed payload raises
+# before any file is touched.
+
+
+def _write_json(path: Path, obj: Mapping[str, Any]) -> None:
+    atomic_write_text(path, json.dumps(obj, indent=2) + "\n")
+
+
+def _leaf_ref(leaf_id: str) -> str:
+    return f"leaves/{leaf_id}/leaf.json"
+
+
+def add_features(project: ProjectConfig, pillar: str, features: Sequence[Mapping[str, Any]]) -> list[Path]:
+    """Create one feature.json per spec under ``pillar`` (validate all, then write)."""
+    pillar = _identifier(pillar, "pillar")
+    roles = _roles_for(project)
+    validated = []
+    for spec in features:
+        feature = validate_feature(spec, roles=roles)
+        if feature["pillar"] != pillar:
+            raise ProductError(f"feature.pillar {feature['pillar']!r} does not match target pillar {pillar!r}")
+        validated.append(feature)
+    base = product_root(project) / pillar / "features"
+    paths = []
+    for feature in validated:
+        path = base / feature["id"] / "feature.json"
+        _write_json(path, feature)
+        paths.append(path)
+    return paths
+
+
+def decompose_feature(project: ProjectConfig, feature_id: str, leaves: Sequence[Mapping[str, Any]]) -> list[Path]:
+    """Write leaf.json files for ``feature_id`` and link them into its feature.json."""
+    tree = enumerate_tree(project)
+    directory = tree.feature_dir(feature_id)
+    feature = tree.feature(feature_id)
+
+    validated = []
+    for spec in leaves:
+        leaf = validate_leaf(spec)
+        if leaf["feature"] != feature_id:
+            raise ProductError(f"leaf.feature {leaf['feature']!r} does not match {feature_id!r}")
+        validated.append(leaf)
+
+    links = list(feature["leaves"])
+    known = {link["id"] for link in links}
+    for leaf in validated:
+        if leaf["id"] not in known:
+            links.append({"ref": _leaf_ref(leaf["id"]), "id": leaf["id"]})
+            known.add(leaf["id"])
+    for leaf in validated:
+        for dep in leaf["depends_on"]:
+            if dep not in known:
+                raise ProductError(f"leaf {leaf['id']!r} depends_on {dep!r}, which is not a sibling leaf")
+
+    updated_feature = validate_feature({**feature, "leaves": links}, roles=_roles_for(project))
+    paths = []
+    for leaf in validated:
+        path = directory / _leaf_ref(leaf["id"])
+        _write_json(path, leaf)
+        paths.append(path)
+    feature_path = directory / "feature.json"
+    _write_json(feature_path, updated_feature)
+    paths.append(feature_path)
+    return paths
+
+
+def set_leaf_status(project: ProjectConfig, feature_id: str, leaf_id: str, status: str) -> Path:
+    """Set one leaf's status (validated, atomic)."""
+    _enum(status, LEAF_STATUSES, "status")
+    directory = enumerate_tree(project).feature_dir(feature_id)
+    path = directory / _leaf_ref(leaf_id)
+    if not path.is_file():
+        raise ProductError(f"feature {feature_id!r} has no leaf {leaf_id!r}")
+    leaf = validate_leaf(json.loads(path.read_text(encoding="utf-8")))
+    _write_json(path, validate_leaf({**leaf, "status": status}))
+    return path
+
+
+def _rewrite_feature(project: ProjectConfig, feature_id: str, changes: Mapping[str, Any]) -> Path:
+    directory = enumerate_tree(project).feature_dir(feature_id)
+    path = directory / "feature.json"
+    feature = validate_feature(json.loads(path.read_text(encoding="utf-8")), roles=_roles_for(project))
+    _write_json(path, validate_feature({**feature, **changes}, roles=_roles_for(project)))
+    return path
+
+
+def set_run_ref(project: ProjectConfig, feature_id: str, run_id: str) -> Path:
+    """Point a feature at its current run (``runs/<run_id>``)."""
+    return _rewrite_feature(project, feature_id, {"run_ref": f"runs/{run_id}"})
+
+
+def set_approval(project: ProjectConfig, feature_id: str, approval: str) -> Path:
+    """Flip a feature's approval gate (the human control plane, decision #4)."""
+    _enum(approval, APPROVALS, "approval")
+    return _rewrite_feature(project, feature_id, {"approval": approval})
+
+
+def set_loop_state(project: ProjectConfig, feature_id: str, role: str, state: str) -> Path:
+    """Advance one role's loop checkpoint for a feature."""
+    _enum(state, LOOP_STATES, "loop state")
+    directory = enumerate_tree(project).feature_dir(feature_id)
+    path = directory / "feature.json"
+    feature = validate_feature(json.loads(path.read_text(encoding="utf-8")), roles=_roles_for(project))
+    loop = feature["loop"]
+    if not any(entry["role"] == role for entry in loop):
+        raise ProductError(f"feature {feature_id!r} loop has no role {role!r}")
+    new_loop = [{"role": e["role"], "s": state if e["role"] == role else e["s"]} for e in loop]
+    _write_json(path, validate_feature({**feature, "loop": new_loop}, roles=_roles_for(project)))
+    return path

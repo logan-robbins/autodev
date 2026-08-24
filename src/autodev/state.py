@@ -42,6 +42,28 @@ def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
     )
 
 
+def atomic_write_text(path: Path, content: str, *, mode: int | None = None) -> None:
+    """Write ``content`` to ``path`` atomically (temp file, fsync, replace).
+
+    The same durable-replace pattern the registry uses, exposed for the typed
+    product-tree writes and the composed-law file. Parent directories are created.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            temp_path.chmod(mode)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 class Registry:
     def __init__(self, *, home: Path | None = None) -> None:
         self.home = (home or autodev_home()).resolve()
