@@ -15,11 +15,15 @@ here so the schema is validated at the boundary, the way ``config.py`` validates
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection, Mapping
-from pathlib import PurePosixPath
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from autodev.config import _ID_RE
+from autodev.config import _ID_RE, ProjectConfig
+
+PRODUCT_ROOT = ("product", "pillars")
 
 # The three standard roles; loop[].role must be one of the configured roles, and
 # these are the fallback when a descriptor declares none (pre-schema-3).
@@ -180,3 +184,90 @@ def validate_leaf(obj: Mapping[str, Any]) -> dict[str, Any]:
         "depends_on": depends_on,
         "run_ref": run_ref,
     }
+
+
+# --- A1: enumeration ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PillarView:
+    id: str
+    features: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
+class ProductTree:
+    pillars: tuple[PillarView, ...]
+    directories: dict[str, Path]
+
+    def feature_dir(self, feature_id: str) -> Path:
+        try:
+            return self.directories[feature_id]
+        except KeyError as exc:
+            raise ProductError(f"unknown feature {feature_id!r}") from exc
+
+    def feature(self, feature_id: str) -> dict:
+        for pillar in self.pillars:
+            for feature in pillar.features:
+                if feature["id"] == feature_id:
+                    return feature
+        raise ProductError(f"unknown feature {feature_id!r}")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"pillars": [{"id": pillar.id, "features": list(pillar.features)} for pillar in self.pillars]}
+
+
+def _roles_for(project: ProjectConfig) -> tuple[str, ...]:
+    roles = getattr(project, "roles", None)
+    if roles:
+        return tuple(roles)
+    return DEFAULT_ROLES
+
+
+def product_root(project: ProjectConfig) -> Path:
+    return project.root.joinpath(*PRODUCT_ROOT)
+
+
+def enumerate_tree(project: ProjectConfig) -> ProductTree:
+    """Glob every ``feature.json``, validate it, and group by pillar.
+
+    Leaves are linked, not inlined: their content is loaded only on drill-down
+    (:func:`load_leaf`). Enumeration still fails fast on a dangling or duplicated
+    leaf ref, a feature whose ``pillar`` disagrees with its directory, or a
+    duplicate feature id — a broken tree is a bug, not something to render around.
+    """
+    roles = _roles_for(project)
+    root = product_root(project)
+    grouped: dict[str, list[dict]] = {}
+    directories: dict[str, Path] = {}
+    for feature_path in sorted(root.glob("*/features/*/feature.json")):
+        pillar_dir = feature_path.parents[2].name
+        feature = validate_feature(json.loads(feature_path.read_text(encoding="utf-8")), roles=roles)
+        if feature["pillar"] != pillar_dir:
+            raise ProductError(
+                f"{feature_path}: feature.pillar {feature['pillar']!r} does not match directory {pillar_dir!r}"
+            )
+        feature_id = feature["id"]
+        if feature_id in directories:
+            raise ProductError(f"duplicate feature id {feature_id!r} in the product tree")
+        directories[feature_id] = feature_path.parent
+        for link in feature["leaves"]:
+            if not (feature_path.parent / link["ref"]).is_file():
+                raise ProductError(f"feature {feature_id!r} references missing leaf {link['ref']!r}")
+        grouped.setdefault(pillar_dir, []).append(feature)
+
+    pillars = tuple(
+        PillarView(id=pillar_id, features=tuple(sorted(features, key=lambda f: f["id"])))
+        for pillar_id, features in sorted(grouped.items())
+    )
+    return ProductTree(pillars=pillars, directories=directories)
+
+
+def load_leaf(project: ProjectConfig, feature_id: str, ref: str) -> dict[str, Any]:
+    """Follow one ``leaves[].ref`` and return the validated leaf (drill-down)."""
+    directory = enumerate_tree(project).feature_dir(feature_id)
+    checked = _relative_ref(ref, "leaf ref", suffix="leaf.json")
+    path = directory / checked
+    if not path.is_file():
+        raise ProductError(f"feature {feature_id!r} has no leaf at {ref!r}")
+    return validate_leaf(json.loads(path.read_text(encoding="utf-8")))
