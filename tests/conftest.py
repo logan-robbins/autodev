@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -57,3 +58,83 @@ def project_repo(tmp_path: Path) -> Path:
     git(root, "add", ".")
     git(root, "commit", "-m", "Initial project")
     return root
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def product_tree(project_repo: Path) -> Path:
+    """Seed a durable product tree under ``project_repo`` (intent only, no runs).
+
+    One pillar ``replay-engine`` with two features:
+
+    - ``certified-l3-book`` — approved, engineering active, two leaves whose
+      ``store`` depends on an as-yet-unverified ``bucket`` (an unmet edge).
+    - ``fast-ingest`` — proposed (the orchestrator must not schedule downstream
+      roles on it), no leaves yet.
+    """
+    features = project_repo / "product" / "pillars" / "replay-engine" / "features"
+    book = features / "certified-l3-book"
+    _write_json(
+        book / "feature.json",
+        {
+            "id": "certified-l3-book",
+            "pillar": "replay-engine",
+            "name": "Certified L3 book",
+            "approval": "approved",
+            "loop": [
+                {"role": "product-manager", "s": "done"},
+                {"role": "project-manager", "s": "done"},
+                {"role": "engineering", "s": "active"},
+            ],
+            "run_ref": "runs/book-7",
+            "leaves": [
+                {"ref": "leaves/bucket/leaf.json", "id": "bucket"},
+                {"ref": "leaves/store/leaf.json", "id": "store"},
+            ],
+        },
+    )
+    _write_json(
+        book / "leaves" / "bucket" / "leaf.json",
+        {
+            "id": "bucket",
+            "feature": "certified-l3-book",
+            "status": "in_progress",
+            "pod": "book",
+            "contract_ref": "contracts/rate_limit.pyi",
+            "depends_on": [],
+            "run_ref": "runs/book-7",
+        },
+    )
+    _write_json(
+        book / "leaves" / "store" / "leaf.json",
+        {
+            "id": "store",
+            "feature": "certified-l3-book",
+            "status": "pending",
+            "pod": "book",
+            "contract_ref": "contracts/store.pyi",
+            "depends_on": ["bucket"],
+            "run_ref": None,
+        },
+    )
+    _write_json(
+        features / "fast-ingest" / "feature.json",
+        {
+            "id": "fast-ingest",
+            "pillar": "replay-engine",
+            "name": "Fast ingest",
+            "approval": "proposed",
+            "loop": [
+                {"role": "product-manager", "s": "done"},
+                {"role": "project-manager", "s": "pending"},
+                {"role": "engineering", "s": "pending"},
+            ],
+            "run_ref": None,
+            "leaves": [],
+        },
+    )
+    return project_repo
