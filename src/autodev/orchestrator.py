@@ -17,8 +17,9 @@ from dataclasses import dataclass
 
 from autodev import product, trace
 from autodev.config import LoopConfig, ProjectConfig
+from autodev.prompts import compose_law
 from autodev.sessions import RunContext, start_session
-from autodev.state import project_paths
+from autodev.state import project_paths, write_role_law
 from autodev.workspaces import ensure_workspace
 
 # role -> the step kind its pass declares (feeds AUTODEV_KIND / policy).
@@ -111,11 +112,15 @@ def _select_agent(project: ProjectConfig, feature: dict | None) -> str | None:
 
 
 def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
-    """Start one role-instance session with its run env + hooks (composed seam)."""
+    """Start one role-instance session with its run env, hooks, and durable law."""
     if decision.agent is None:
         return
     agent = project.agent(decision.agent)
     workspace = ensure_workspace(project, agent)
+    law_file = None
+    role_config = project.roles.get(decision.role)
+    if role_config is not None:
+        law_file = write_role_law(project.id, decision.role, compose_law(project.loop, role_config))
     start_session(
         project,
         agent,
@@ -127,6 +132,7 @@ def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
             kind=_ROLE_KIND.get(decision.role, "tool"),
             provider=agent.provider,
         ),
+        law_file=law_file,
     )
 
 

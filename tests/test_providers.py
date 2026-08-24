@@ -98,3 +98,21 @@ def test_launch_without_hook_config_is_unchanged(monkeypatch, tmp_path: Path) ->
     config = ProviderConfig(name="claude", command="claude")
     command = launch_command(config, tmp_path, bypass_permissions=False, initial_prompt="go")
     assert command == ["/bin/claude", "go"]
+
+
+def test_claude_appends_the_law_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/claude")
+    config = ProviderConfig(name="claude", command="claude")
+    law = tmp_path / "engineering.md"
+    command = launch_command(config, tmp_path, bypass_permissions=False, initial_prompt=None, law_file=law)
+    assert command == ["/bin/claude", "--append-system-prompt-file", str(law)]
+
+
+def test_codex_does_not_clobber_instructions_with_law(monkeypatch, tmp_path: Path) -> None:
+    # Codex 0.147.0 has no safe append flag, so law_file must NOT add one.
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/codex")
+    config = ProviderConfig(name="codex", command="codex")
+    law = tmp_path / "engineering.md"
+    command = launch_command(config, tmp_path, bypass_permissions=False, initial_prompt=None, law_file=law)
+    assert command == ["/bin/codex", "--cd", str(tmp_path), "--no-alt-screen"]
+    assert not any("instructions" in arg for arg in command)

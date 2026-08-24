@@ -151,12 +151,14 @@ def start_session(
     *,
     send_initial_goal: bool,
     run: RunContext | None = None,
+    law_file: Path | None = None,
 ) -> bool:
     """Start one session and return True, or return False when it already exists.
 
     When ``run`` is set the session carries its run env and the worker is
     launched with the hook spec, so every tool call folds into the run trace and
-    the policy gate fires.
+    the policy gate fires. ``law_file`` is the composed role law appended to the
+    system prompt (C2, Claude only).
     """
     name = session_name(project, agent)
     if session_exists(name):
@@ -171,6 +173,7 @@ def start_session(
         bypass_permissions=project.bypass_permissions,
         initial_prompt=prompt,
         hook_config=spec,
+        law_file=law_file,
     )
     _tmux(*_new_session_args(name, workspace.path, command, env))
 

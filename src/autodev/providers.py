@@ -82,12 +82,20 @@ def launch_command(
     bypass_permissions: bool,
     initial_prompt: str | None,
     hook_config: Mapping[str, Sequence[str]] | None = None,
+    law_file: Path | None = None,
 ) -> list[str]:
     """Build one interactive host-CLI command without installing or wrapping it.
 
     Hook injection (A5b) is argv-only — Claude via ``--settings`` inline JSON,
     Codex via ``-c hooks.*`` overrides — so no hook file ever lands in the
     managed repo and the one-file invariant holds.
+
+    Durable-law spine (C2): Claude appends the composed law via
+    ``--append-system-prompt-file`` (verified to append, never clobber). Codex
+    0.147.0 has **no** safe append-only system-prompt flag (``base_instructions``
+    does not exist; ``model_instructions_file`` would replace Codex's built-in
+    instructions), so Codex does not inject the law at launch — its durable law
+    rides the SessionStart/UserPromptSubmit hook additionalContext (C3) instead.
     """
     executable = executable_path(provider.command)
     if provider.name == "codex":
@@ -100,6 +108,7 @@ def launch_command(
             command.append("--dangerously-bypass-approvals-and-sandbox")
         if hook_config:
             command.extend(_codex_hook_overrides(hook_config))
+        # law_file intentionally not injected at launch for Codex (see docstring).
     elif provider.name == "claude":
         command = [executable]
         if provider.model:
@@ -108,6 +117,8 @@ def launch_command(
             command.extend(["--effort", provider.effort])
         if bypass_permissions:
             command.append("--dangerously-skip-permissions")
+        if law_file is not None:
+            command.extend(["--append-system-prompt-file", str(law_file)])
         if hook_config:
             command.extend(["--settings", json.dumps(_claude_hook_settings(hook_config))])
     else:  # Config validation should make this unreachable.
