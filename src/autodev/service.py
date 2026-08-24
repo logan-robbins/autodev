@@ -1,0 +1,276 @@
+"""Project-scoped localhost UI and control API."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import subprocess
+import tempfile
+from html import escape
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from autodev.config import ConfigError, ProjectConfig, load_project
+from autodev.integrate import integrate
+from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.sessions import send_goal
+from autodev.state import project_paths
+
+LOOPBACK_HOST = "127.0.0.1"
+MAX_BODY_BYTES = 1_000_000
+
+
+def _control_token(project: ProjectConfig, *, home: Path | None = None) -> str:
+    path = project_paths(project.id, home=home).home / "ui-token"
+    if path.exists():
+        token = path.read_text(encoding="utf-8").strip()
+        if not token:
+            raise RuntimeError(f"Autodev UI token is empty: {path}")
+        return token
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    path.write_text(token + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return token
+
+
+def _descriptor_dirty(project: ProjectConfig) -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--", project.descriptor.name],
+        cwd=project.root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "cannot inspect project configuration status")
+    return bool(result.stdout.strip())
+
+
+def _project_payload(project: ProjectConfig) -> dict[str, Any]:
+    return {
+        "id": project.id,
+        "name": project.name,
+        "root": str(project.root),
+        "descriptor": str(project.descriptor),
+        "base_branch": project.base_branch,
+        "ui_port": project.ui_port,
+        "session_pattern": project.session_pattern,
+        "config_dirty": _descriptor_dirty(project),
+        "agents": [status.as_dict() for status in statuses(project, project.agents)],
+    }
+
+
+def _config_payload(project: ProjectConfig) -> dict[str, Any]:
+    return {
+        "content": project.descriptor.read_text(encoding="utf-8"),
+        "dirty": _descriptor_dirty(project),
+    }
+
+
+def _save_config(descriptor: Path, content: str, *, project_id: str) -> ProjectConfig:
+    if not content.strip():
+        raise ConfigError("project configuration cannot be empty")
+    mode = descriptor.stat().st_mode & 0o777
+    handle, temp_name = tempfile.mkstemp(prefix=".autodev-", suffix=".toml", dir=descriptor.parent)
+    candidate_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        candidate_path.chmod(mode)
+        candidate = load_project(candidate_path)
+        if candidate.id != project_id:
+            raise ConfigError(f"project.id cannot be changed from {project_id!r} in its running project UI")
+        candidate_path.replace(descriptor)
+    finally:
+        candidate_path.unlink(missing_ok=True)
+    return load_project(descriptor)
+
+
+def _dashboard(project: ProjectConfig, token: str) -> str:
+    safe_token = json.dumps(token)
+    safe_title = json.dumps(project.name)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Autodev · {escape(project.name)}</title><style>
+body{{font:15px system-ui,sans-serif;margin:0;background:#101418;color:#e9eef2}}main{{max-width:1100px;margin:36px auto;padding:0 24px}}
+h1{{font-size:30px;margin-bottom:4px}}.panel{{background:#192027;border:1px solid #303b44;border-radius:12px;padding:18px;margin:18px 0}}
+table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px;border-bottom:1px solid #303b44}}button{{margin:4px;padding:7px 12px}}
+.ok{{color:#72d39a}}.off{{color:#f1b86a}}.error{{color:#ff7b72}}code{{color:#a9d5ff}}textarea{{box-sizing:border-box;width:100%;min-height:480px;
+background:#0d1117;color:#d8e2ea;border:1px solid #44515c;border-radius:8px;padding:14px;font:13px ui-monospace,monospace;line-height:1.45}}
+#message{{min-height:22px}}.meta{{color:#aab6bf}}</style></head><body><main><h1 id="title"></h1><p class="meta" id="meta">Loading…</p>
+<section class="panel"><h2>Agents</h2><div id="agents">Loading…</div></section>
+<section class="panel"><h2>Project configuration</h2><p>Edit the canonical <code>autodev.toml</code>. Saves are validated and atomic; commit accepted changes in Git.</p>
+<textarea id="config" spellcheck="false"></textarea><p><button onclick="saveConfig()">Validate and save</button></p><p id="message"></p></section>
+</main><script>
+const token={safe_token}; const initialTitle={safe_title};
+const esc=value=>String(value).replace(/[&<>"']/g,char=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
+async function request(path, options={{}}){{
+  const response=await fetch(path,options); const data=await response.json();
+  if(!response.ok) throw new Error(data.error||`HTTP ${{response.status}}`); return data;
+}}
+async function action(action, agent){{
+  try{{await request(`/api/actions/${{action}}`,{{method:'POST',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{agents:[agent],send_goal:true}})}});await loadProject();}}
+  catch(error){{document.getElementById('message').textContent=error.message;}}
+}}
+async function loadProject(){{
+  const p=await request('/api/project'); document.title=`Autodev · ${{p.name}}`; document.getElementById('title').textContent=p.name||initialTitle;
+  document.getElementById('meta').textContent=`${{p.root}} · port ${{p.ui_port}} · config ${{p.config_dirty?'modified':'committed'}}`;
+  document.getElementById('agents').innerHTML=`<table><thead><tr><th>Agent</th><th>Provider</th><th>Session</th><th>Git</th><th>Actions</th></tr></thead><tbody>${{p.agents.map(a=>
+    `<tr><td>${{esc(a.agent)}}</td><td>${{esc(a.provider)}}</td><td class="${{a.running?'ok':'off'}}">${{a.running?'running':'offline'}}<br><code>${{esc(a.session)}}</code></td><td>${{a.ownership_violations.length?'VIOLATION':(a.git_status?'dirty':'clean')}}</td><td><button onclick="action('ensure','${{a.agent}}')">Launch</button><button onclick="action('goal','${{a.agent}}')">Goal</button><button onclick="action('stop','${{a.agent}}')">Stop</button></td></tr>`).join('')}}</tbody></table>`;
+}}
+async function loadConfig(){{const data=await request('/api/config');document.getElementById('config').value=data.content;}}
+async function saveConfig(){{const message=document.getElementById('message');message.textContent='Validating…';try{{
+  await request('/api/config',{{method:'PUT',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{content:document.getElementById('config').value}})}});
+  message.textContent='Saved. Commit autodev.toml in Git; restart this UI if ui_port changed.';await loadProject();
+}}catch(error){{message.textContent=error.message;}}}}
+Promise.all([loadProject(),loadConfig()]).catch(error=>document.getElementById('message').textContent=error.message);setInterval(loadProject,5000);
+</script></body></html>"""
+
+
+class ProjectUIHandler(BaseHTTPRequestHandler):
+    descriptor: Path
+    project_id: str
+    token: str
+
+    def _project(self) -> ProjectConfig:
+        project = load_project(self.descriptor)
+        if project.id != self.project_id:
+            raise ConfigError(f"running UI expected project.id {self.project_id!r}; found {project.id!r}")
+        return project
+
+    def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, indent=2, sort_keys=True).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > MAX_BODY_BYTES:
+            raise ValueError("request body is too large")
+        if not length:
+            return {}
+        value = json.loads(self.rfile.read(length))
+        if not isinstance(value, dict):
+            raise TypeError("request body must be a JSON object")
+        return value
+
+    def _authorized(self) -> bool:
+        if self.headers.get("Authorization") == f"Bearer {self.token}":
+            return True
+        self._json(HTTPStatus.UNAUTHORIZED, {"error": "invalid project UI token"})
+        return False
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        try:
+            project = self._project()
+            if path == "/":
+                body = _dashboard(project, self.token).encode()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == "/api/project":
+                self._json(HTTPStatus.OK, _project_payload(project))
+            elif path == "/api/config":
+                self._json(HTTPStatus.OK, _config_payload(project))
+            else:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except (ConfigError, OSError, RuntimeError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._authorized():
+            return
+        if urlparse(self.path).path.rstrip("/") != "/api/config":
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        try:
+            content = self._body().get("content")
+            if not isinstance(content, str):
+                raise TypeError("content must be a TOML string")
+            project = _save_config(self.descriptor, content, project_id=self.project_id)
+            self._json(HTTPStatus.OK, {"project": _project_payload(project)})
+        except (ConfigError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._authorized():
+            return
+        parts = urlparse(self.path).path.rstrip("/").split("/")
+        if len(parts) != 4 or parts[1:3] != ["api", "actions"]:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        action = parts[3]
+        try:
+            body = self._body()
+            raw_agents = body.get("agents", [])
+            if not isinstance(raw_agents, list) or any(not isinstance(item, str) for item in raw_agents):
+                raise TypeError("agents must be a list of agent IDs")
+            project = self._project()
+            agents = select_agents(project, raw_agents)
+            if action == "ensure":
+                result: object = ensure_agents(
+                    project,
+                    agents,
+                    base_ref=None,
+                    start=True,
+                    send_initial_goal=bool(body.get("send_goal", True)),
+                    yolo=bool(body.get("yolo", False)),
+                )
+            elif action == "goal":
+                result = [{"agent": agent.id, "goal_sent": bool(send_goal(project, agent))} for agent in agents]
+            elif action == "stop":
+                result = stop_agents(project, agents)
+            elif action == "integrate":
+                if len(agents) != 1:
+                    raise ValueError("integrate requires exactly one agent")
+                result = {"message": integrate(project, agents[0])}
+            else:
+                self._json(HTTPStatus.NOT_FOUND, {"error": f"unknown action: {action}"})
+                return
+            self._json(HTTPStatus.OK, {"result": result})
+        except (ConfigError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def log_message(self, message: str, *args: object) -> None:
+        print(f"autodev ui: {self.address_string()} - {message % args}", flush=True)
+
+
+def project_ui_handler(project: ProjectConfig, token: str) -> type[ProjectUIHandler]:
+    return type(
+        "BoundProjectUIHandler",
+        (ProjectUIHandler,),
+        {"descriptor": project.descriptor, "project_id": project.id, "token": token},
+    )
+
+
+def serve_project(project: ProjectConfig) -> None:
+    token = _control_token(project)
+    handler = project_ui_handler(project, token)
+    try:
+        server = ThreadingHTTPServer((LOOPBACK_HOST, project.ui_port), handler)
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot start project UI for {project.id!r} on {LOOPBACK_HOST}:{project.ui_port}: {exc}"
+        ) from exc
+    server.daemon_threads = True
+    print(f"Autodev UI for {project.name}: http://{LOOPBACK_HOST}:{project.ui_port}/", flush=True)
+    print(f"Project UI token: {project_paths(project.id).home / 'ui-token'}", flush=True)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()

@@ -1,0 +1,37 @@
+schema_version = 1
+
+[project]
+id = "acme-app"
+name = "Acme App"
+base_branch = "main"
+instructions = "Preserve public API compatibility, use uv for Python, and keep generated assets reproducible."
+context_roots = ["docs/", "contracts/", "pyproject.toml", "uv.lock"]
+verify_commands = ["uv run pytest"]
+
+[runtime]
+session_pattern = "autodev-{project}-{agent}"
+ui_port = 8765
+
+[providers.codex]
+model = "gpt-5.6-terra"
+effort = "high"
+
+[providers.claude]
+model = "sonnet"
+effort = "high"
+
+[[agents]]
+id = "backend"
+provider = "codex"
+purpose = "Own the backend service and its tests."
+goal = "Take the highest-priority actionable backend task from the repository's task tracker and complete one verified vertical change."
+write_roots = ["src/backend/", "tests/backend/"]
+read_roots = ["src/shared/"]
+
+[[agents]]
+id = "frontend"
+provider = "claude"
+purpose = "Own the browser application and its tests."
+goal = "Take the highest-priority actionable frontend task from the repository's task tracker and complete one verified vertical change."
+write_roots = ["src/frontend/", "tests/frontend/"]
+read_roots = ["src/shared/"]
