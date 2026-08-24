@@ -116,7 +116,7 @@ def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
     if decision.agent is None:
         return
     agent = project.agent(decision.agent)
-    workspace = ensure_workspace(project, agent)
+    workspace = ensure_workspace(project, agent, kind=_ROLE_KIND.get(decision.role))
     law_file = None
     role_config = project.roles.get(decision.role)
     if role_config is not None:

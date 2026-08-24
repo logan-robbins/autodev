@@ -40,8 +40,23 @@ def workspace_path(project: ProjectConfig, agent: AgentConfig, *, home: Path | N
     return project_paths(project.id, home=home).worktrees / agent.id
 
 
-def sparse_paths(project: ProjectConfig, agent: AgentConfig) -> tuple[str, ...]:
-    return tuple(
+# src/impl is the pod-private implementation; an integrator must never see it.
+_IMPL_ROOT = "src/impl"
+
+
+def _under_impl(pattern: str) -> bool:
+    stripped = pattern.rstrip("/")
+    return stripped == _IMPL_ROOT or stripped.startswith(_IMPL_ROOT + "/")
+
+
+def sparse_paths(project: ProjectConfig, agent: AgentConfig, *, kind: str | None = None) -> tuple[str, ...]:
+    """Sparse-checkout patterns for an agent, narrowed by the role/kind it runs.
+
+    An ``integrate`` pass reads eval signals, not source: its worktree physically
+    excludes ``src/impl/**`` (C5), so the boundary is enforced by what is on disk,
+    not by a request the model could ignore.
+    """
+    patterns = list(
         dict.fromkeys(
             (
                 *AUTOMATIC_CONTEXT,
@@ -51,6 +66,10 @@ def sparse_paths(project: ProjectConfig, agent: AgentConfig) -> tuple[str, ...]:
             )
         )
     )
+    if kind == "integrate":
+        patterns = [pattern for pattern in patterns if not _under_impl(pattern)]
+        patterns.append(f"!{_IMPL_ROOT}/")
+    return tuple(patterns)
 
 
 def _git(
@@ -87,6 +106,7 @@ def ensure_workspace(
     *,
     base_ref: str | None = None,
     home: Path | None = None,
+    kind: str | None = None,
 ) -> Workspace:
     branch = workspace_branch(project, agent)
     destination = workspace_path(project, agent, home=home)
@@ -122,7 +142,7 @@ def ensure_workspace(
                 ref,
             )
 
-    patterns = "\n".join(sparse_paths(project, agent)) + "\n"
+    patterns = "\n".join(sparse_paths(project, agent, kind=kind)) + "\n"
     _git(destination, "sparse-checkout", "init", "--no-cone")
     _git(destination, "sparse-checkout", "set", "--no-cone", "--stdin", input_text=patterns)
     _git(destination, "checkout", branch)
