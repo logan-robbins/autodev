@@ -21,16 +21,18 @@ from autodev.config import (
 )
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.policy import PolicyInput, decide
 from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
 from autodev.state import Registry, autodev_home, project_paths, read_role_law
-from autodev.trace import emit, event_from_hook, read_tokens
+from autodev.trace import emit, event_from_hook, read_events, read_tokens
 from autodev.wizard import run_setup_wizard
 
 CHARTER_MAX_CONTEXT = 10_000
+POLICY_BLOCK_EXIT = 2
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -226,6 +228,50 @@ def _charter_digest(run_id: str) -> int:
     return 0
 
 
+def _red_test_recorded(run_id: str) -> bool:
+    """True when a failing (red) verify step is already in this pass's trace."""
+    try:
+        events = read_events(_hook_run_dir(run_id))
+    except (ConfigError, OSError):
+        return False
+    return any(e.get("type") == "step_finished" and e.get("status") == "red" for e in events)
+
+
+def _policy_check(run_id: str) -> int:
+    """PreToolUse gate: exit 2 (reason on stderr) to hard-block a denied tool call.
+
+    Role/kind come from the session env (A5c). With none set (a non-orchestrated
+    session) nothing is gated. exit 2 is the portable hard block verified on both
+    providers; a denied write never runs.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    role = os.environ.get("AUTODEV_ROLE")
+    kind = os.environ.get("AUTODEV_KIND")
+    if not role or not kind:
+        return 0
+    decision = decide(
+        PolicyInput(
+            role=role,
+            kind=kind,
+            tool_name=str(payload.get("tool_name", "")),
+            tool_input=payload.get("tool_input") or {},
+            red_test=_red_test_recorded(run_id),
+        )
+    )
+    if decision.allow:
+        return 0
+    print(f"Blocked by Autodev policy: {decision.reason}", file=sys.stderr)
+    return POLICY_BLOCK_EXIT
+
+
 def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "project",
@@ -261,6 +307,11 @@ def build_parser() -> argparse.ArgumentParser:
     charter_commands = charter.add_subparsers(dest="charter_command", required=True)
     charter_digest = charter_commands.add_parser("digest", help="print the role law as hook additionalContext")
     charter_digest.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
+
+    policy = subparsers.add_parser("policy", help="enforce the per-role/kind PreToolUse policy")
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    policy_check = policy_commands.add_parser("check", help="block a denied tool call (exit 2) from a hook payload")
+    policy_check.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
@@ -332,6 +383,10 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
         if args.charter_command != "digest":
             raise AssertionError(f"unhandled charter command: {args.charter_command}")
         return _charter_digest(args.run_id)
+    if args.command == "policy":
+        if args.policy_command != "check":
+            raise AssertionError(f"unhandled policy command: {args.policy_command}")
+        return _policy_check(args.run_id)
     if args.command == "setup":
         result = run_setup_wizard(args.project)
         _validate_base(result.project)
