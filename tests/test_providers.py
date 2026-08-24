@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from autodev import providers
 from autodev.config import ProviderConfig
 from autodev.providers import ProviderError, launch_command
+from autodev.trace import hook_config
 
 
 def test_codex_launch_uses_installed_cli_and_local_defaults(monkeypatch, tmp_path: Path) -> None:
@@ -60,3 +62,39 @@ def test_missing_provider_fails_fast(monkeypatch) -> None:
     monkeypatch.setattr(providers.shutil, "which", lambda _command: None)
     with pytest.raises(ProviderError, match="not installed or not on PATH"):
         providers.executable_path("codex")
+
+
+def test_claude_launch_injects_hooks_via_settings(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/claude")
+    config = ProviderConfig(name="claude", command="claude")
+    spec = hook_config("book-7", ["autodev"])
+
+    command = launch_command(config, tmp_path, bypass_permissions=True, initial_prompt=None, hook_config=spec)
+
+    assert "--settings" in command
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["hooks"]["PreToolUse"][0]["matcher"] == "Write|Edit"
+    assert settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "autodev policy check --run book-7"
+    assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "autodev trace emit --run book-7"
+    # PostToolUse folds every tool: no matcher narrows it.
+    assert "matcher" not in settings["hooks"]["PostToolUse"][0]
+
+
+def test_codex_launch_injects_hooks_via_config_overrides(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/codex")
+    config = ProviderConfig(name="codex", command="codex")
+    spec = hook_config("book-7", ["autodev"])
+
+    command = launch_command(config, tmp_path, bypass_permissions=True, initial_prompt=None, hook_config=spec)
+
+    assert "--dangerously-bypass-hook-trust" in command
+    assert "features.hooks=true" in command
+    pretool = next(arg for arg in command if arg.startswith("hooks.PreToolUse="))
+    assert "autodev policy check --run book-7" in pretool
+
+
+def test_launch_without_hook_config_is_unchanged(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/claude")
+    config = ProviderConfig(name="claude", command="claude")
+    command = launch_command(config, tmp_path, bypass_permissions=False, initial_prompt="go")
+    assert command == ["/bin/claude", "go"]
