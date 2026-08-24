@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from autodev import trace
 from autodev.config import _ID_RE, ProjectConfig
+from autodev.state import project_paths
 
 PRODUCT_ROOT = ("product", "pillars")
 
@@ -271,3 +273,72 @@ def load_leaf(project: ProjectConfig, feature_id: str, ref: str) -> dict[str, An
     if not path.is_file():
         raise ProductError(f"feature {feature_id!r} has no leaf at {ref!r}")
     return validate_leaf(json.loads(path.read_text(encoding="utf-8")))
+
+
+# --- A8: derive phase + join the live run -------------------------------------
+
+
+@dataclass(frozen=True)
+class FeatureView:
+    feature: dict
+    phase: str
+    owner_role: str
+    run: trace.RunView | None
+    leaves: tuple[dict, ...]
+    unmet_depends_on: tuple[tuple[str, str], ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            **self.feature,
+            "phase": self.phase,
+            "owner_role": self.owner_role,
+            "run": asdict(self.run) if self.run is not None else None,
+            "leaves": list(self.leaves),
+            "unmet_depends_on": [list(edge) for edge in self.unmet_depends_on],
+        }
+
+
+def derive_phase(feature: Mapping[str, Any]) -> tuple[str, str]:
+    """Derive (phase, owner_role) from ``loop[]`` — never stored (ethos 0.4).
+
+    The active checkpoint is the phase; with none active the frontier is the
+    first blocked-or-pending role, and an all-done loop is ``shipped``.
+    """
+    loop = feature["loop"]
+    for entry in loop:
+        if entry["s"] == "active":
+            return entry["role"], entry["role"]
+    if all(entry["s"] == "done" for entry in loop):
+        return "shipped", loop[-1]["role"]
+    for state in ("blocked", "pending"):
+        for entry in loop:
+            if entry["s"] == state:
+                phase = "blocked" if state == "blocked" else entry["role"]
+                return phase, entry["role"]
+    return "shipped", loop[-1]["role"]
+
+
+def _run_dir(project: ProjectConfig, run_ref: str) -> Path:
+    return project_paths(project.id).home / run_ref
+
+
+def join_run(project: ProjectConfig, feature: Mapping[str, Any]) -> FeatureView:
+    """Join a feature with its live trace: derived phase + embedded RunView + leaves."""
+    normalised = validate_feature(feature, roles=_roles_for(project))
+    phase, owner_role = derive_phase(normalised)
+
+    run = None
+    if normalised["run_ref"]:
+        run = trace.to_dag(trace.read_events(_run_dir(project, normalised["run_ref"])))
+
+    leaves = tuple(load_leaf(project, normalised["id"], link["ref"]) for link in normalised["leaves"])
+    verified = {leaf["id"] for leaf in leaves if leaf["status"] == "verified"}
+    unmet = tuple((leaf["id"], dep) for leaf in leaves for dep in leaf["depends_on"] if dep not in verified)
+    return FeatureView(
+        feature=normalised,
+        phase=phase,
+        owner_role=owner_role,
+        run=run,
+        leaves=leaves,
+        unmet_depends_on=unmet,
+    )

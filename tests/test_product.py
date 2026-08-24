@@ -5,14 +5,19 @@ from pathlib import Path
 
 import pytest
 
+from autodev import trace
 from autodev.config import load_project
 from autodev.product import (
     ProductError,
+    derive_phase,
     enumerate_tree,
+    join_run,
     load_leaf,
     validate_feature,
     validate_leaf,
 )
+from autodev.state import project_paths
+from autodev.trace import new_event
 
 
 def _feature(**overrides) -> dict:
@@ -184,3 +189,88 @@ def test_load_leaf_follows_ref_lazily(product_tree: Path) -> None:
     leaf = load_leaf(project, "certified-l3-book", "leaves/store/leaf.json")
     assert leaf["id"] == "store"
     assert leaf["depends_on"] == ["bucket"]
+
+
+# --- A8: derive phase + join run ---------------------------------------------
+
+
+def test_derive_phase_is_the_active_role() -> None:
+    feature = {
+        "loop": [
+            {"role": "product-manager", "s": "done"},
+            {"role": "project-manager", "s": "done"},
+            {"role": "engineering", "s": "active"},
+        ]
+    }
+    assert derive_phase(feature) == ("engineering", "engineering")
+
+
+def test_derive_phase_shipped_when_all_done() -> None:
+    feature = {"loop": [{"role": "product-manager", "s": "done"}, {"role": "engineering", "s": "done"}]}
+    assert derive_phase(feature) == ("shipped", "engineering")
+
+
+def test_derive_phase_frontier_when_none_active() -> None:
+    feature = {
+        "loop": [
+            {"role": "product-manager", "s": "done"},
+            {"role": "project-manager", "s": "pending"},
+            {"role": "engineering", "s": "pending"},
+        ]
+    }
+    assert derive_phase(feature) == ("project-manager", "project-manager")
+
+
+def test_join_run_without_run_ref_derives_phase_only(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    feature = enumerate_tree(project).feature("fast-ingest")
+    view = join_run(project, feature)
+    assert view.phase == "project-manager"  # pm done, pjm pending
+    assert view.run is None
+
+
+def test_join_run_embeds_live_run_and_unmet_edges(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    # Seed the run the feature points at (feature.run_ref == "runs/book-7").
+    run_dir = project_paths(project.id).runs / "book-7"
+    trace.emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="build",
+        ),
+    )
+    trace.emit(
+        run_dir,
+        new_event(
+            "step_declared",
+            step_id="impl",
+            parent=None,
+            kind="implement",
+            objective="build store",
+            inputs=[],
+            expects="",
+            done_when="",
+            agent="book",
+        ),
+    )
+    trace.emit(
+        run_dir, new_event("step_started", step_id="impl", agent="book", agent_type="implement", provider="claude")
+    )
+
+    feature = enumerate_tree(project).feature("certified-l3-book")
+    view = join_run(project, feature)
+
+    assert view.phase == "engineering"
+    assert view.run is not None
+    assert view.run.active_step_id == "impl"
+    # store depends on bucket, which is not verified -> an unmet edge.
+    assert ("store", "bucket") in view.unmet_depends_on
+    # the whole view serialises for the API.
+    import json as _json
+
+    _json.dumps(view.as_dict())
