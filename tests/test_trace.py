@@ -311,3 +311,101 @@ def test_to_dag_folds_persisted_events_jsonl(tmp_path: Path) -> None:
     assert ("plan", "search1") in view.edges
     assert ("search1", "synth") in view.edges
     assert view.active_step_id == "synth"
+
+
+# --- A5a: hook spec -----------------------------------------------------------
+
+
+def test_hook_config_routes_events_to_verbs() -> None:
+    spec = trace.hook_config("book-7", ["uv", "run", "autodev"])
+    assert spec["PreToolUse"] == ["uv", "run", "autodev", "policy", "check", "--run", "book-7"]
+    assert spec["PostToolUse"] == ["uv", "run", "autodev", "trace", "emit", "--run", "book-7"]
+    assert spec["SessionStart"] == ["uv", "run", "autodev", "charter", "digest", "--run", "book-7"]
+    assert spec["UserPromptSubmit"][-3:] == ["digest", "--run", "book-7"]
+    # every provider-parity event is covered.
+    assert set(spec) == {
+        "PreToolUse",
+        "PostToolUse",
+        "SubagentStart",
+        "SubagentStop",
+        "Stop",
+        "SessionStart",
+        "UserPromptSubmit",
+    }
+
+
+def test_hook_config_requires_run_and_command() -> None:
+    with pytest.raises(TraceError):
+        trace.hook_config("", ["autodev"])
+    with pytest.raises(TraceError):
+        trace.hook_config("r", [])
+
+
+# --- A6 (pure): hook payload -> event mapping ---------------------------------
+
+
+def test_event_from_hook_folds_generic_tool_to_noise() -> None:
+    event = trace.event_from_hook(
+        {"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_use_id": "t1", "agent_id": "eng"}
+    )
+    assert event["type"] == "step_declared"
+    assert event["kind"] == "tool"
+    assert event["step_id"] == "t1"
+
+
+def test_event_from_hook_marks_verify_green_and_red() -> None:
+    green = trace.event_from_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "v1",
+            "tool_input": {"command": "uv run pytest -q"},
+        },
+        verify_commands=["uv run pytest"],
+    )
+    assert green["type"] == "step_finished" and green["status"] == "green"
+    red = trace.event_from_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "v2",
+            "tool_input": {"command": "uv run pytest -q"},
+            "tool_output_is_error": True,
+        },
+        verify_commands=["uv run pytest"],
+    )
+    assert red["status"] == "red"
+
+
+def test_event_from_hook_subagent_start_is_a_stage() -> None:
+    event = trace.event_from_hook(
+        {"hook_event_name": "SubagentStart", "agent_type": "search", "agent_id": "pm-sub", "tool_use_id": "s1"}
+    )
+    assert event["type"] == "step_declared"
+    assert event["kind"] == "search"
+    assert event["agent_type"] == "search"
+
+
+def test_event_from_hook_stop_finishes_run() -> None:
+    assert trace.event_from_hook({"hook_event_name": "Stop"})["type"] == "run_finished"
+
+
+def test_event_from_hook_ignores_routed_events() -> None:
+    assert trace.event_from_hook({"hook_event_name": "PreToolUse", "tool_name": "Write"}) is None
+    assert trace.event_from_hook({"hook_event_name": "SessionStart"}) is None
+
+
+def test_event_from_hook_stream_folds_into_dag(tmp_path: Path) -> None:
+    payloads = [
+        {"hook_event_name": "SubagentStart", "agent_type": "implement", "tool_use_id": "impl", "agent_id": "eng"},
+        {"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_use_id": "r1", "agent_id": "eng"},
+        {"hook_event_name": "SubagentStop", "tool_use_id": "impl"},
+    ]
+    run_dir = tmp_path / "r"
+    for payload in payloads:
+        event = trace.event_from_hook(payload)
+        if event is not None:
+            trace.emit(run_dir, event)
+    view = trace.to_dag(read_events(run_dir))
+    assert [n.step_id for n in view.nodes] == ["impl"]
+    assert view.metrics["tool_calls"] == 1

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -352,3 +352,133 @@ def to_dag(events: Iterable[Mapping[str, Any]]) -> RunView:
         metrics=metrics,
         active_step_id=active_step_id,
     )
+
+
+# --- A5a: provider-agnostic hook spec -----------------------------------------
+
+# Which autodev verb each hook event routes to. trace emit folds the firehose;
+# policy check is the PreToolUse gate; charter digest re-injects the durable law.
+HOOK_VERBS: dict[str, tuple[str, ...]] = {
+    "PreToolUse": ("policy", "check"),
+    "PostToolUse": ("trace", "emit"),
+    "SubagentStart": ("trace", "emit"),
+    "SubagentStop": ("trace", "emit"),
+    "Stop": ("trace", "emit"),
+    "SessionStart": ("charter", "digest"),
+    "UserPromptSubmit": ("charter", "digest"),
+}
+
+
+def hook_config(run_id: str, autodev_cmd: Sequence[str]) -> dict[str, list[str]]:
+    """Map each hook event to the ``autodev`` argv the worker must run for it.
+
+    Provider-agnostic: :func:`autodev.providers.launch_command` renders this into
+    a Claude ``--settings`` blob or Codex ``-c hooks.*`` overrides (A5b). Every
+    verb carries ``--run <run_id>`` so a fired hook resolves back to its run.
+    """
+    if not run_id:
+        raise TraceError("hook_config requires a run id")
+    base = list(autodev_cmd)
+    if not base:
+        raise TraceError("hook_config requires a non-empty autodev command")
+    return {event: [*base, *verb, "--run", run_id] for event, verb in HOOK_VERBS.items()}
+
+
+# --- A6: hook payload -> event mapping ----------------------------------------
+
+# SubagentStart's agent_type names the stage; anything unrecognised is tool noise.
+_AGENT_TYPE_KIND = {
+    "plan": "plan",
+    "search": "search",
+    "research": "search",
+    "contract": "contract",
+    "implement": "implement",
+    "integrate": "integrate",
+    "reconcile": "reconcile",
+}
+
+_CORRELATION_KEYS = ("turn_id", "agent_id", "agent_type", "tool_use_id")
+
+
+def _correlation(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: payload[key] for key in _CORRELATION_KEYS if payload.get(key)}
+
+
+def _hook_step_id(payload: Mapping[str, Any]) -> str:
+    return str(payload.get("tool_use_id") or payload.get("agent_id") or payload.get("tool_name") or "step")
+
+
+def _is_verify_command(tool_input: Mapping[str, Any], verify_commands: Sequence[str]) -> bool:
+    command = str(tool_input.get("command", ""))
+    return any(verify and verify in command for verify in verify_commands)
+
+
+def _tool_errored(payload: Mapping[str, Any]) -> bool:
+    if payload.get("tool_output_is_error"):
+        return True
+    response = payload.get("tool_response")
+    return isinstance(response, Mapping) and bool(response.get("is_error"))
+
+
+def event_from_hook(payload: Mapping[str, Any], *, verify_commands: Sequence[str] = ()) -> dict[str, Any] | None:
+    """Deterministically fold one hook payload into one trace event (or ``None``).
+
+    This is the Layer-1 stage-detection rule set (pure, no model): a subagent is
+    a stage keyed by its ``agent_type``; a Bash run of a verify command is a
+    verify stage that finishes red/green; every other tool call is fold-to-noise
+    (``kind == "tool"``). Events routed elsewhere (PreToolUse -> policy check,
+    SessionStart/UserPromptSubmit -> charter digest) map to ``None`` here.
+    """
+    name = payload.get("hook_event_name")
+    correlation = _correlation(payload)
+    step_id = _hook_step_id(payload)
+
+    if name == "SubagentStart":
+        agent_type = str(payload.get("agent_type") or "tool")
+        return new_event(
+            "step_declared",
+            step_id=step_id,
+            parent=payload.get("parent"),
+            kind=_AGENT_TYPE_KIND.get(agent_type, "tool"),
+            objective=f"{agent_type} subagent",
+            inputs=list(payload.get("inputs", [])),
+            expects=payload.get("expects", ""),
+            done_when=payload.get("done_when", ""),
+            agent=str(payload.get("agent_id") or agent_type),
+            **correlation,
+        )
+    if name == "SubagentStop":
+        return new_event(
+            "step_finished",
+            step_id=step_id,
+            status="done",
+            output_artifacts=list(payload.get("output_artifacts", [])),
+            tokens=int(payload.get("tokens", 0) or 0),
+            **correlation,
+        )
+    if name == "Stop":
+        return new_event("run_finished", status="done", **correlation)
+    if name == "PostToolUse":
+        tool_input = payload.get("tool_input") or {}
+        if payload.get("tool_name") == "Bash" and _is_verify_command(tool_input, verify_commands):
+            return new_event(
+                "step_finished",
+                step_id=step_id,
+                status="red" if _tool_errored(payload) else "green",
+                output_artifacts=[],
+                tokens=int(payload.get("tokens", 0) or 0),
+                **correlation,
+            )
+        return new_event(
+            "step_declared",
+            step_id=step_id,
+            parent=None,
+            kind="tool",
+            objective=str(payload.get("tool_name") or "tool"),
+            inputs=[],
+            expects="",
+            done_when="",
+            agent=str(payload.get("agent_id") or "worker"),
+            **correlation,
+        )
+    return None
