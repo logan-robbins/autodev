@@ -12,13 +12,21 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from autodev.config import ConfigError, ProjectConfig, load_project
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.product import (
+    ProductError,
+    derive_phase,
+    enumerate_tree,
+    join_run,
+    load_leaf,
+)
 from autodev.sessions import send_goal
 from autodev.state import project_paths
+from autodev.trace import read_events
 
 LOOPBACK_HOST = "127.0.0.1"
 MAX_BODY_BYTES = 1_000_000
@@ -71,6 +79,37 @@ def _config_payload(project: ProjectConfig) -> dict[str, Any]:
         "content": project.descriptor.read_text(encoding="utf-8"),
         "dirty": _descriptor_dirty(project),
     }
+
+
+def _product_payload(project: ProjectConfig) -> dict[str, Any]:
+    """Enumerate the tree (glob feature.json), grouping by pillar with derived phase."""
+    tree = enumerate_tree(project)
+    pillars = []
+    for pillar in tree.pillars:
+        features = []
+        for feature in pillar.features:
+            phase, owner_role = derive_phase(feature)
+            features.append({**feature, "phase": phase, "owner_role": owner_role})
+        pillars.append({"id": pillar.id, "features": features})
+    return {"pillars": pillars}
+
+
+def _feature_run_payload(project: ProjectConfig, feature_id: str, since: int | None) -> dict[str, Any]:
+    """The drill-down RunView for a feature, with a ?since cursor for live recolor."""
+    feature = enumerate_tree(project).feature(feature_id)
+    cursor = 0
+    if feature["run_ref"]:
+        events = read_events(project_paths(project.id).home / feature["run_ref"])
+        cursor = max((int(event.get("seq", 0)) for event in events), default=0)
+    if since is not None and since >= cursor:
+        return {"unchanged": True, "cursor": cursor}
+    payload = join_run(project, feature).as_dict()
+    payload["cursor"] = cursor
+    return payload
+
+
+def _leaf_payload(project: ProjectConfig, feature_id: str, leaf_id: str) -> dict[str, Any]:
+    return load_leaf(project, feature_id, f"leaves/{leaf_id}/leaf.json")
 
 
 def _save_config(descriptor: Path, content: str, *, project_id: str) -> ProjectConfig:
@@ -172,8 +211,19 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.UNAUTHORIZED, {"error": "invalid project UI token"})
         return False
 
+    def _since(self) -> int | None:
+        values = parse_qs(urlparse(self.path).query).get("since")
+        if not values:
+            return None
+        try:
+            return int(values[0])
+        except ValueError:
+            return None
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        segments = [segment for segment in path.split("/") if segment]
         try:
             project = self._project()
             if path == "/":
@@ -188,8 +238,16 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, _project_payload(project))
             elif path == "/api/config":
                 self._json(HTTPStatus.OK, _config_payload(project))
+            elif path == "/api/product":
+                self._json(HTTPStatus.OK, _product_payload(project))
+            elif len(segments) == 4 and segments[:2] == ["api", "features"] and segments[3] == "run":
+                self._json(HTTPStatus.OK, _feature_run_payload(project, segments[2], self._since()))
+            elif len(segments) == 5 and segments[:2] == ["api", "features"] and segments[3] == "leaves":
+                self._json(HTTPStatus.OK, _leaf_payload(project, segments[2], segments[4]))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except ProductError as exc:
+            self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
         except (ConfigError, OSError, RuntimeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
