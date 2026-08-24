@@ -26,9 +26,11 @@ from autodev.providers import ProviderError, version
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
-from autodev.state import Registry, autodev_home, project_paths
+from autodev.state import Registry, autodev_home, project_paths, read_role_law
 from autodev.trace import emit, event_from_hook, read_tokens
 from autodev.wizard import run_setup_wizard
+
+CHARTER_MAX_CONTEXT = 10_000
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -197,6 +199,33 @@ def _trace_emit(run_id: str) -> int:
     return 0
 
 
+def _charter_digest(run_id: str) -> int:
+    """Print the run role's composed law as hook additionalContext (<=10k).
+
+    Registered on SessionStart + UserPromptSubmit (A5a) so the durable law is
+    re-injected from disk after every compaction and at every pass — the layer
+    that survives regardless of the append-system-prompt outcome (E-1).
+    """
+    raw = sys.stdin.read()
+    event_name = "SessionStart"
+    if raw.strip():
+        with contextlib.suppress(json.JSONDecodeError):
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                event_name = payload.get("hook_event_name", event_name)
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    role = os.environ.get("AUTODEV_ROLE")
+    if not project_id or not role:
+        return 0
+    try:
+        law = read_role_law(project_id, role)
+    except ConfigError:
+        return 0
+    context = law[:CHARTER_MAX_CONTEXT]
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}))
+    return 0
+
+
 def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "project",
@@ -227,6 +256,11 @@ def build_parser() -> argparse.ArgumentParser:
     trace_commands = trace.add_subparsers(dest="trace_command", required=True)
     trace_emit = trace_commands.add_parser("emit", help="append one event from a hook payload on stdin")
     trace_emit.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
+
+    charter = subparsers.add_parser("charter", help="inject durable role law into a worker via hooks")
+    charter_commands = charter.add_subparsers(dest="charter_command", required=True)
+    charter_digest = charter_commands.add_parser("digest", help="print the role law as hook additionalContext")
+    charter_digest.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
@@ -294,6 +328,10 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
         if args.trace_command != "emit":
             raise AssertionError(f"unhandled trace command: {args.trace_command}")
         return _trace_emit(args.run_id)
+    if args.command == "charter":
+        if args.charter_command != "digest":
+            raise AssertionError(f"unhandled charter command: {args.charter_command}")
+        return _charter_digest(args.run_id)
     if args.command == "setup":
         result = run_setup_wizard(args.project)
         _validate_base(result.project)

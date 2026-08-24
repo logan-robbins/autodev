@@ -7,7 +7,7 @@ from pathlib import Path
 
 from autodev.cli import build_parser, main
 from autodev.config import load_project
-from autodev.state import Registry, project_paths
+from autodev.state import Registry, project_paths, write_role_law
 from autodev.trace import read_events
 from autodev.wizard import WizardResult
 
@@ -72,6 +72,47 @@ def test_trace_emit_ignores_routed_event_without_writing(project_repo: Path, tmp
 
     assert main(["trace", "emit", "--run", "book-7"]) == 0
     assert read_events(project_paths("sample-project", home=state).runs / "book-7") == []
+
+
+def test_charter_digest_injects_role_law_as_additional_context(tmp_path: Path, monkeypatch, capsys) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    write_role_law("sample-project", "engineering", "CHARTER: red tests before internals.", home=state)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart"})))
+
+    assert main(["charter", "digest", "--run", "book-7"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "red tests before internals" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_charter_survives_a_forced_compaction(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Independent of E-1: SessionStart re-fires after compaction and the digest
+    # re-reads the law from disk, so the charter is present both times.
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    write_role_law("sample-project", "engineering", "CHARTER-LAW: own a leaf.", home=state)
+
+    def digest_once(event: str) -> str:
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": event})))
+        assert main(["charter", "digest", "--run", "r"]) == 0
+        return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+
+    assert "CHARTER-LAW" in digest_once("SessionStart")  # initial session
+    assert "CHARTER-LAW" in digest_once("SessionStart")  # after a forced compaction
+
+
+def test_charter_digest_without_role_env_is_silent(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("AUTODEV_PROJECT", raising=False)
+    monkeypatch.delenv("AUTODEV_ROLE", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["charter", "digest", "--run", "r"]) == 0
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_setup_command_accepts_optional_project_path() -> None:
