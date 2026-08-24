@@ -30,6 +30,7 @@ class ProjectPaths:
     worktrees: Path
     logs: Path
     runs: Path
+    laws: Path
 
 
 def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
@@ -39,7 +40,30 @@ def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
         worktrees=root / "worktrees",
         logs=root / "logs",
         runs=root / "runs",
+        laws=root / "laws",
     )
+
+
+def role_law_path(project_id: str, role: str, *, home: Path | None = None) -> Path:
+    return project_paths(project_id, home=home).laws / f"{role}.md"
+
+
+def write_role_law(project_id: str, role: str, content: str, *, home: Path | None = None) -> Path:
+    """Persist one role's composed law under AUTODEV_HOME (0600), outside the worktree.
+
+    Kept out of the managed repo so it never collides with the project's own
+    CLAUDE.md and never trips the ownership check.
+    """
+    path = role_law_path(project_id, role, home=home)
+    atomic_write_text(path, content, mode=0o600)
+    return path
+
+
+def read_role_law(project_id: str, role: str, *, home: Path | None = None) -> str:
+    path = role_law_path(project_id, role, home=home)
+    if not path.exists():
+        raise ConfigError(f"no composed law for role {role!r} at {path}")
+    return path.read_text(encoding="utf-8")
 
 
 def atomic_write_text(path: Path, content: str, *, mode: int | None = None) -> None:
