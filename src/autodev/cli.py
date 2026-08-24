@@ -22,6 +22,13 @@ from autodev.config import (
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
 from autodev.policy import PolicyInput, decide
+from autodev.product import (
+    ProductError,
+    add_features,
+    decompose_feature,
+    set_approval,
+    set_leaf_status,
+)
 from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
 from autodev.service import serve_project
@@ -272,6 +279,35 @@ def _policy_check(run_id: str) -> int:
     return POLICY_BLOCK_EXIT
 
 
+def _stdin_json_list(label: str) -> list:
+    try:
+        payload = json.loads(sys.stdin.read() or "[]")
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{label} must be a JSON array on stdin: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ConfigError(f"{label} must be a JSON array")
+    return payload
+
+
+def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
+    """Typed tree-authoring verbs (decision #3): schema-validated, atomic writes."""
+    if args.product_command == "add-features":
+        paths = add_features(project, args.pillar, _stdin_json_list("features"))
+        print(f"wrote {len(paths)} feature file(s) under pillar {args.pillar}")
+    elif args.product_command == "decompose-feature":
+        paths = decompose_feature(project, args.feature, _stdin_json_list("leaves"))
+        print(f"wrote {len(paths)} file(s) for feature {args.feature}")
+    elif args.product_command == "set-leaf-status":
+        path = set_leaf_status(project, args.feature, args.leaf, args.status)
+        print(f"set {args.feature}/{args.leaf} status to {args.status} ({path})")
+    elif args.product_command == "set-approval":
+        path = set_approval(project, args.feature, args.approval)
+        print(f"set {args.feature} approval to {args.approval} ({path})")
+    else:  # argparse required=True makes this unreachable.
+        raise AssertionError(f"unhandled product command: {args.product_command}")
+    return 0
+
+
 def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "project",
@@ -312,6 +348,26 @@ def build_parser() -> argparse.ArgumentParser:
     policy_commands = policy.add_subparsers(dest="policy_command", required=True)
     policy_check = policy_commands.add_parser("check", help="block a denied tool call (exit 2) from a hook payload")
     policy_check.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
+
+    product = subparsers.add_parser("product", help="author the product tree through typed, validated verbs")
+    product_commands = product.add_subparsers(dest="product_command", required=True)
+    add_features_cmd = product_commands.add_parser(
+        "add-features", help="write feature.json files (JSON array on stdin)"
+    )
+    _add_project_argument(add_features_cmd, required=True)
+    add_features_cmd.add_argument("--pillar", required=True)
+    decompose_cmd = product_commands.add_parser("decompose-feature", help="write leaf.json files (JSON array on stdin)")
+    _add_project_argument(decompose_cmd, required=True)
+    decompose_cmd.add_argument("--feature", required=True)
+    leaf_status_cmd = product_commands.add_parser("set-leaf-status", help="update one leaf's status")
+    _add_project_argument(leaf_status_cmd, required=True)
+    leaf_status_cmd.add_argument("--feature", required=True)
+    leaf_status_cmd.add_argument("--leaf", required=True)
+    leaf_status_cmd.add_argument("--status", required=True)
+    approval_cmd = product_commands.add_parser("set-approval", help="flip a feature's approval gate")
+    _add_project_argument(approval_cmd, required=True)
+    approval_cmd.add_argument("--feature", required=True)
+    approval_cmd.add_argument("--approval", required=True, choices=["proposed", "approved"])
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
@@ -429,6 +485,8 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             print("no registered projects")
         return 0
     project = _resolve_project(args.project, active_registry)
+    if args.command == "product":
+        return _product_verb(project, args)
     if args.command == "ui":
         serve_project(project)
         return 0
@@ -527,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return run(args)
-    except (ConfigError, ProviderError, SessionError, RuntimeError) as exc:
+    except (ConfigError, ProductError, ProviderError, SessionError, RuntimeError) as exc:
         print(f"autodev: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

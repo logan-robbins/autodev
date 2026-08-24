@@ -160,6 +160,72 @@ def test_policy_check_without_role_env_does_not_block(tmp_path: Path, monkeypatc
     assert main(["policy", "check", "--run", "r"]) == 0
 
 
+def test_product_cli_add_features_and_decompose(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    features = [
+        {
+            "id": "cold-path",
+            "pillar": "replay-engine",
+            "name": "Cold path",
+            "approval": "proposed",
+            "loop": [
+                {"role": "product-manager", "s": "done"},
+                {"role": "project-manager", "s": "pending"},
+                {"role": "engineering", "s": "pending"},
+            ],
+            "run_ref": None,
+            "leaves": [],
+        }
+    ]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(features)))
+    assert main(["product", "add-features", str(product_tree), "--pillar", "replay-engine"]) == 0
+
+    leaves = [{"id": "index", "feature": "cold-path", "status": "pending", "depends_on": []}]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(leaves)))
+    assert main(["product", "decompose-feature", str(product_tree), "--feature", "cold-path"]) == 0
+
+    from autodev.product import enumerate_tree
+
+    feature = enumerate_tree(load_project(product_tree)).feature("cold-path")
+    assert [link["id"] for link in feature["leaves"]] == ["index"]
+
+
+def test_product_cli_set_leaf_status_and_approval(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    assert (
+        main(
+            [
+                "product",
+                "set-leaf-status",
+                str(product_tree),
+                "--feature",
+                "certified-l3-book",
+                "--leaf",
+                "bucket",
+                "--status",
+                "verified",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(["product", "set-approval", str(product_tree), "--feature", "fast-ingest", "--approval", "approved"]) == 0
+    )
+
+    from autodev.product import enumerate_tree, load_leaf
+
+    project = load_project(product_tree)
+    assert load_leaf(project, "certified-l3-book", "leaves/bucket/leaf.json")["status"] == "verified"
+    assert enumerate_tree(project).feature("fast-ingest")["approval"] == "approved"
+
+
+def test_product_cli_rejects_invalid_payload(product_tree: Path, tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([{"id": "x", "pillar": "replay-engine"}])))
+    assert main(["product", "add-features", str(product_tree), "--pillar", "replay-engine"]) == 1
+    assert "autodev:" in capsys.readouterr().err
+
+
 def test_setup_command_accepts_optional_project_path() -> None:
     args = build_parser().parse_args(["setup", "/tmp/example"])
 
