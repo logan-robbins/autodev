@@ -27,7 +27,7 @@ from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
 from autodev.state import Registry, autodev_home, project_paths
-from autodev.trace import emit, event_from_hook
+from autodev.trace import emit, event_from_hook, read_tokens
 from autodev.wizard import run_setup_wizard
 
 
@@ -185,6 +185,11 @@ def _trace_emit(run_id: str) -> int:
     verify_commands: tuple[str, ...] = ()
     with contextlib.suppress(ConfigError):
         verify_commands = Registry().resolve(project_id).verify_commands
+    provider = os.environ.get("AUTODEV_PROVIDER")
+    transcript = payload.get("transcript_path")
+    if provider and transcript and "tokens" not in payload:
+        with contextlib.suppress(Exception):
+            payload = {**payload, "tokens": read_tokens(Path(transcript), provider)}
     event = event_from_hook(payload, verify_commands=verify_commands)
     if event is None:
         return 0

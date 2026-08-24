@@ -482,3 +482,73 @@ def event_from_hook(payload: Mapping[str, Any], *, verify_commands: Sequence[str
             **correlation,
         )
     return None
+
+
+# --- A11: token tail-reader ---------------------------------------------------
+# No hook payload carries token counts on either provider, so the transcript the
+# payload points at is the only source. The two providers write different JSONL
+# shapes, so read_tokens dispatches per provider. Exact live-transcript field
+# layouts are confirmed by the manual token smoke (see the PR); the parsers here
+# read the documented shapes and degrade to 0 rather than raising.
+
+
+def _as_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _claude_usage_total(usage: Mapping[str, Any]) -> int:
+    return (
+        _as_int(usage.get("input_tokens"))
+        + _as_int(usage.get("output_tokens"))
+        + _as_int(usage.get("cache_read_input_tokens"))
+        + _as_int(usage.get("cache_creation_input_tokens"))
+    )
+
+
+def _claude_tokens(records: list[Mapping[str, Any]]) -> int:
+    total = 0
+    for record in records:
+        message = record.get("message")
+        usage = message.get("usage") if isinstance(message, Mapping) else record.get("usage")
+        if isinstance(usage, Mapping):
+            total = _claude_usage_total(usage)  # tail: most recent turn's usage
+    return total
+
+
+def _codex_tokens(records: list[Mapping[str, Any]]) -> int:
+    total = 0
+    for record in records:
+        info = record.get("info") if isinstance(record.get("info"), Mapping) else record
+        usage = info.get("total_token_usage") if isinstance(info, Mapping) else None
+        if isinstance(usage, Mapping):
+            found = usage.get("total_tokens")
+            if found is None:
+                found = _as_int(usage.get("input_tokens")) + _as_int(usage.get("output_tokens"))
+            total = _as_int(found)
+        elif isinstance(record.get("usage"), Mapping):
+            u = record["usage"]
+            total = _as_int(u.get("total_tokens")) or (_as_int(u.get("input_tokens")) + _as_int(u.get("output_tokens")))
+    return total
+
+
+def read_tokens(transcript_path: Path, provider: str) -> int:
+    """Return the tokens for a run by tailing its provider transcript (A11)."""
+    path = Path(transcript_path)
+    if not path.exists():
+        return 0
+    records: list[Mapping[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, Mapping):
+            records.append(obj)
+    if provider == "claude":
+        return _claude_tokens(records)
+    if provider == "codex":
+        return _codex_tokens(records)
+    raise TraceError(f"unknown provider for token read: {provider!r}")

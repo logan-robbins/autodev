@@ -42,6 +42,28 @@ def test_trace_emit_appends_one_event_from_stdin(project_repo: Path, tmp_path: P
     assert events[0]["kind"] == "tool"
 
 
+def test_trace_emit_enriches_tokens_from_transcript(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    project = load_project(project_repo)
+    Registry(home=state).register(project)
+    monkeypatch.setenv("AUTODEV_PROJECT", project.id)
+    monkeypatch.setenv("AUTODEV_PROVIDER", "claude")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        json.dumps({"message": {"usage": {"input_tokens": 200, "output_tokens": 15}}}) + "\n",
+        encoding="utf-8",
+    )
+    payload = {"hook_event_name": "SubagentStop", "tool_use_id": "impl", "transcript_path": str(transcript)}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    assert main(["trace", "emit", "--run", "book-7"]) == 0
+
+    events = read_events(project_paths(project.id, home=state).runs / "book-7")
+    assert events[0]["type"] == "step_finished"
+    assert events[0]["tokens"] == 215
+
+
 def test_trace_emit_ignores_routed_event_without_writing(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("AUTODEV_HOME", str(state))

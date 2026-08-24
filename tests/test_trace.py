@@ -409,3 +409,89 @@ def test_event_from_hook_stream_folds_into_dag(tmp_path: Path) -> None:
     view = trace.to_dag(read_events(run_dir))
     assert [n.step_id for n in view.nodes] == ["impl"]
     assert view.metrics["tool_calls"] == 1
+
+
+# --- A11: token tail-reader ---------------------------------------------------
+
+
+def test_read_tokens_claude_tails_last_usage(tmp_path: Path) -> None:
+    transcript = tmp_path / "claude.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 100, "output_tokens": 20}}}),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "usage": {
+                                "input_tokens": 500,
+                                "output_tokens": 40,
+                                "cache_read_input_tokens": 10,
+                            }
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert trace.read_tokens(transcript, "claude") == 550
+
+
+def test_read_tokens_codex_reads_total_token_usage(tmp_path: Path) -> None:
+    transcript = tmp_path / "codex.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "message", "text": "hi"}),
+                json.dumps({"type": "token_count", "info": {"total_token_usage": {"total_tokens": 1234}}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert trace.read_tokens(transcript, "codex") == 1234
+
+
+def test_read_tokens_missing_file_is_zero(tmp_path: Path) -> None:
+    assert trace.read_tokens(tmp_path / "absent.jsonl", "claude") == 0
+
+
+def test_read_tokens_unknown_provider_raises(tmp_path: Path) -> None:
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(TraceError, match="unknown provider"):
+        trace.read_tokens(transcript, "gemini")
+
+
+def test_tokens_from_transcript_populate_step_finished_on_fold(tmp_path: Path) -> None:
+    transcript = tmp_path / "claude.jsonl"
+    transcript.write_text(
+        json.dumps({"message": {"usage": {"input_tokens": 300, "output_tokens": 25}}}) + "\n",
+        encoding="utf-8",
+    )
+    tokens = trace.read_tokens(transcript, "claude")
+    run_dir = tmp_path / "r"
+    trace.emit(run_dir, _run_started())
+    trace.emit(
+        run_dir,
+        new_event(
+            "step_declared",
+            step_id="s",
+            parent=None,
+            kind="implement",
+            objective="build",
+            inputs=[],
+            expects="",
+            done_when="",
+            agent="eng",
+        ),
+    )
+    trace.emit(run_dir, new_event("step_started", step_id="s", agent="eng", agent_type="implement", provider="claude"))
+    trace.emit(run_dir, new_event("step_finished", step_id="s", status="done", output_artifacts=[], tokens=tokens))
+    view = trace.to_dag(read_events(run_dir))
+    node = next(n for n in view.nodes if n.step_id == "s")
+    assert node.tokens == 325
+    assert view.metrics["tokens"] == 325

@@ -48,6 +48,12 @@ def test_new_session_args_without_env_are_unchanged() -> None:
     assert args == ["new-session", "-d", "-s", "sess", "-c", "/work", "claude go"]
 
 
+def test_session_env_exports_provider_when_set(project_repo: Path) -> None:
+    project = load_project(project_repo)
+    env = _session_env(project, RunContext(run_id="r", role="engineering", kind="implement", provider="claude"))
+    assert env["AUTODEV_PROVIDER"] == "claude"
+
+
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is required")
 def test_starts_installed_cli_in_namespaced_tmux_session(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
     fake_cli = tmp_path / "fake-codex"
