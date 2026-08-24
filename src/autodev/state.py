@@ -29,11 +29,17 @@ class ProjectPaths:
     home: Path
     worktrees: Path
     logs: Path
+    runs: Path
 
 
 def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
     root = (home or autodev_home()) / "projects" / project_id
-    return ProjectPaths(home=root, worktrees=root / "worktrees", logs=root / "logs")
+    return ProjectPaths(
+        home=root,
+        worktrees=root / "worktrees",
+        logs=root / "logs",
+        runs=root / "runs",
+    )
 
 
 class Registry:

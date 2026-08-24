@@ -29,3 +29,9 @@ def test_autodev_home_honors_explicit_override(monkeypatch, tmp_path: Path) -> N
     target = tmp_path / "central-state"
     monkeypatch.setenv("AUTODEV_HOME", str(target))
     assert autodev_home() == target
+
+
+def test_project_paths_expose_runs_directory(tmp_path: Path) -> None:
+    paths = project_paths("acme", home=tmp_path / "state")
+    assert paths.runs == paths.home / "runs"
+    assert paths.runs.parent == paths.home
