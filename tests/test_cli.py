@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import io
+import json
 import subprocess
 from pathlib import Path
 
 from autodev.cli import build_parser, main
 from autodev.config import load_project
+from autodev.state import Registry, project_paths
+from autodev.trace import read_events
 from autodev.wizard import WizardResult
 
 
@@ -18,6 +22,34 @@ def test_validate_prints_machine_readable_contract(project_repo: Path, capsys) -
 def test_invalid_flag_combination_fails_fast(project_repo: Path, capsys) -> None:
     assert main(["ensure", str(project_repo), "--no-start", "--send-goal"]) == 1
     assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_trace_emit_appends_one_event_from_stdin(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    project = load_project(project_repo)
+    Registry(home=state).register(project)
+    monkeypatch.setenv("AUTODEV_PROJECT", project.id)
+    payload = {"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_use_id": "t1", "agent_id": "backend"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    assert main(["trace", "emit", "--run", "book-7"]) == 0
+
+    run_dir = project_paths(project.id, home=state).runs / "book-7"
+    events = read_events(run_dir)
+    assert len(events) == 1
+    assert events[0]["type"] == "step_declared"
+    assert events[0]["kind"] == "tool"
+
+
+def test_trace_emit_ignores_routed_event_without_writing(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Write"})))
+
+    assert main(["trace", "emit", "--run", "book-7"]) == 0
+    assert read_events(project_paths("sample-project", home=state).runs / "book-7") == []
 
 
 def test_setup_command_accepts_optional_project_path() -> None:

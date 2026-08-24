@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,7 +26,8 @@ from autodev.providers import ProviderError, version
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
-from autodev.state import Registry, autodev_home
+from autodev.state import Registry, autodev_home, project_paths
+from autodev.trace import emit, event_from_hook
 from autodev.wizard import run_setup_wizard
 
 
@@ -155,6 +158,40 @@ def _command_version(command: str, flag: str = "--version") -> str:
     return result.stdout.strip() or f"exit {result.returncode}"
 
 
+def _hook_run_dir(run_id: str) -> Path:
+    """Resolve a worker hook's run directory from its session env (A5c)."""
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    if not project_id:
+        raise ConfigError("hook verbs require AUTODEV_PROJECT in the session environment")
+    return project_paths(project_id).runs / run_id
+
+
+def _trace_emit(run_id: str) -> int:
+    """Fold one hook payload (stdin JSON) into the run trace; never blocks a worker."""
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        print("autodev: trace emit received non-JSON hook payload", file=sys.stderr)
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    if not project_id:
+        print("autodev: trace emit requires AUTODEV_PROJECT", file=sys.stderr)
+        return 0
+    verify_commands: tuple[str, ...] = ()
+    with contextlib.suppress(ConfigError):
+        verify_commands = Registry().resolve(project_id).verify_commands
+    event = event_from_hook(payload, verify_commands=verify_commands)
+    if event is None:
+        return 0
+    emit(_hook_run_dir(run_id), event)
+    return 0
+
+
 def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "project",
@@ -180,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     skill = subparsers.add_parser("skill", help="manage the repository-owned operator skill")
     skill_commands = skill.add_subparsers(dest="skill_command", required=True)
     skill_commands.add_parser("install", help="link the operator skill into Codex and Claude Code")
+
+    trace = subparsers.add_parser("trace", help="record run trace events emitted by worker hooks")
+    trace_commands = trace.add_subparsers(dest="trace_command", required=True)
+    trace_emit = trace_commands.add_parser("emit", help="append one event from a hook payload on stdin")
+    trace_emit.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
@@ -243,6 +285,10 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             state = "installed" if link.created else "already installed"
             print(f"{link.client}: {state} {link.path} -> {link.source}")
         return 0
+    if args.command == "trace":
+        if args.trace_command != "emit":
+            raise AssertionError(f"unhandled trace command: {args.trace_command}")
+        return _trace_emit(args.run_id)
     if args.command == "setup":
         result = run_setup_wizard(args.project)
         _validate_base(result.project)
