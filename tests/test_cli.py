@@ -35,7 +35,7 @@ def test_setup_registers_wizard_project_without_launching(
     monkeypatch.setenv("AUTODEV_HOME", str(state))
     monkeypatch.setattr(
         "autodev.cli.run_setup_wizard",
-        lambda selected: WizardResult(project=project, commit=False, launch=False, yolo=False, start_ui=False),
+        lambda selected: WizardResult(project=project, commit=False, launch=False, start_ui=False),
     )
 
     assert main(["setup", str(project_repo)]) == 0
@@ -51,7 +51,7 @@ def test_setup_launches_all_agents_and_sends_goals(project_repo: Path, tmp_path:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
         "autodev.cli.run_setup_wizard",
-        lambda selected: WizardResult(project=project, commit=False, launch=True, yolo=True, start_ui=False),
+        lambda selected: WizardResult(project=project, commit=False, launch=True, start_ui=False),
     )
     captured: dict[str, object] = {}
 
@@ -78,7 +78,6 @@ def test_setup_launches_all_agents_and_sends_goals(project_repo: Path, tmp_path:
             "base_ref": None,
             "start": True,
             "send_initial_goal": True,
-            "yolo": True,
         },
     }
     assert "backend: started, goal sent" in capsys.readouterr().out
@@ -91,7 +90,7 @@ def test_setup_commits_new_descriptor_before_registration(project_repo: Path, tm
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
         "autodev.cli.run_setup_wizard",
-        lambda selected: WizardResult(project=project, commit=True, launch=False, yolo=False, start_ui=False),
+        lambda selected: WizardResult(project=project, commit=True, launch=False, start_ui=False),
     )
 
     assert main(["setup", str(project_repo)]) == 0
@@ -119,7 +118,7 @@ def test_setup_starts_the_bound_project_ui(project_repo: Path, tmp_path: Path, m
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
         "autodev.cli.run_setup_wizard",
-        lambda selected: WizardResult(project=project, commit=False, launch=False, yolo=False, start_ui=True),
+        lambda selected: WizardResult(project=project, commit=False, launch=False, start_ui=True),
     )
     served: list[object] = []
     monkeypatch.setattr("autodev.cli.serve_project", served.append)

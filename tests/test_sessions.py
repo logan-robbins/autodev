@@ -38,9 +38,9 @@ def test_starts_installed_cli_in_namespaced_tmux_session(project_repo: Path, tmp
         stop_session(project, agent)
 
     try:
-        assert start_session(project, agent, workspace, yolo=False, send_initial_goal=False) is True
+        assert start_session(project, agent, workspace, send_initial_goal=False) is True
         assert session_exists(name)
-        assert start_session(project, agent, workspace, yolo=False, send_initial_goal=False) is False
+        assert start_session(project, agent, workspace, send_initial_goal=False) is False
         status = agent_status(project, agent)
         assert status.running is True
         assert status.worktree_exists is True

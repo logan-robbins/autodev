@@ -11,7 +11,7 @@ def test_codex_launch_uses_installed_cli_and_local_defaults(monkeypatch, tmp_pat
     monkeypatch.setattr(providers, "executable_path", lambda _command: "/usr/local/bin/codex")
     config = ProviderConfig(name="codex", command="codex")
 
-    command = launch_command(config, tmp_path, yolo=False, initial_prompt="Do the work")
+    command = launch_command(config, tmp_path, bypass_permissions=False, initial_prompt="Do the work")
 
     assert command == [
         "/usr/local/bin/codex",
@@ -22,10 +22,10 @@ def test_codex_launch_uses_installed_cli_and_local_defaults(monkeypatch, tmp_pat
     ]
 
 
-def test_codex_launch_maps_explicit_model_effort_and_yolo(monkeypatch, tmp_path: Path) -> None:
+def test_codex_launch_maps_explicit_model_effort_and_permission_bypass(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/codex")
     config = ProviderConfig(name="codex", command="codex", model="gpt-test", effort="high")
-    command = launch_command(config, tmp_path, yolo=True, initial_prompt=None)
+    command = launch_command(config, tmp_path, bypass_permissions=True, initial_prompt=None)
 
     assert command == [
         "/bin/codex",
@@ -43,7 +43,7 @@ def test_codex_launch_maps_explicit_model_effort_and_yolo(monkeypatch, tmp_path:
 def test_claude_launch_maps_installed_cli_flags(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/claude")
     config = ProviderConfig(name="claude", command="claude", model="sonnet", effort="xhigh")
-    command = launch_command(config, tmp_path, yolo=True, initial_prompt="Ship it")
+    command = launch_command(config, tmp_path, bypass_permissions=True, initial_prompt="Ship it")
 
     assert command == [
         "/bin/claude",

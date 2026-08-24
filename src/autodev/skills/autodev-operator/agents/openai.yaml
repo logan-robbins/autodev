@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autodev Operator"
+  short_description: "Configure and supervise Autodev projects"
+  default_prompt: "Use $autodev-operator to set up and operate Autodev for this repository."

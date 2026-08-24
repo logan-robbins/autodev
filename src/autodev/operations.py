@@ -31,7 +31,6 @@ def ensure_agents(
     base_ref: str | None,
     start: bool,
     send_initial_goal: bool,
-    yolo: bool,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     for agent in agents:
@@ -43,7 +42,6 @@ def ensure_agents(
                 project,
                 agent,
                 workspace,
-                yolo=yolo,
                 send_initial_goal=send_initial_goal,
             )
             if send_initial_goal:

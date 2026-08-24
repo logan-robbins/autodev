@@ -11,11 +11,16 @@ account, settings, plugins, skills, MCP servers, and model defaults. The launch
 adapters follow the documented [Codex CLI](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 and [Claude Code CLI](https://code.claude.com/docs/en/cli-usage) interfaces.
 
+The Autodev checkout also owns the canonical `autodev-operator` skill. Its
+installer links that committed skill into both clients; it never creates a
+second, drifting local copy.
+
 ## Architecture
 
 ```text
 one Autodev checkout
 ├── Python orchestration and prompt templates
+├── repository-owned operator skill
 ├── shared project registry
 ├── one localhost UI process and port per active project
 └── AUTODEV_HOME/
@@ -58,20 +63,48 @@ Clone and prepare the single shared checkout:
 git clone https://github.com/logan-robbins/autodev.git /path/to/autodev
 cd /path/to/autodev
 uv sync --locked --python 3.12
+uv run autodev skill install
 ```
 
-Run the guided setup from any directory. It asks for the existing project root,
-integration branch, project instructions, verification commands, agent
-ownership, installed CLI settings, tmux session naming, and a dedicated UI
-port. After a descriptor preview, it can register the project, launch every
-agent, and start that project's editable UI:
+`skill install` creates personal symlinks at
+`~/.agents/skills/autodev-operator` for Codex and
+`~/.claude/skills/autodev-operator` for Claude Code. Both point to
+`src/autodev/skills/autodev-operator` in this checkout, so a later Git pull
+updates both clients. It refuses to replace an existing file, directory,
+different link, or broken link. These locations follow the documented
+[Codex skill](https://learn.chatgpt.com/docs/build-skills) and
+[Claude skill](https://code.claude.com/docs/en/slash-commands) conventions.
+
+Start a fresh Codex or Claude session in the repository you want to manage and
+invoke the skill:
+
+```sh
+cd /path/to/project
+codex
+# In Codex: $autodev-operator Set up Autodev for this repository.
+
+claude
+# In Claude: /autodev-operator Set up Autodev for this repository.
+```
+
+That existing conversation is the operator. It inspects the repository,
+designs non-overlapping worker boundaries, creates and commits `autodev.toml`,
+registers the project, checks local prerequisites, prepares worktrees, launches
+the configured Codex or Claude worker sessions in tmux, sends their standing
+goals, confirms status, and gives the exact project UI command and URL. Autodev
+does not launch a separate "boss" session.
+
+For a human-driven alternative, run the CLI wizard. It walks through the
+project root, integration branch, instructions, verification commands, worker
+ownership, installed provider settings, tmux naming, permission policy, and the
+dedicated UI port:
 
 ```sh
 uv run --project /path/to/autodev autodev setup /path/to/project
 ```
 
-Omit `/path/to/project` to choose it in the wizard. After setup, validate the
-descriptor and host tools at any time:
+Omit `/path/to/project` to select it in the wizard. After either setup path,
+validate the descriptor and host tools at any time:
 
 ```sh
 uv run --project /path/to/autodev autodev validate /path/to/project
@@ -86,11 +119,11 @@ uv run --project /path/to/autodev autodev ensure /path/to/project --send-goal
 uv run --project /path/to/autodev autodev status /path/to/project
 ```
 
-`ensure` automatically registers the project with the shared runtime.
-It reuses existing worktrees and tmux sessions; it never replaces live agents.
-The guided setup requires a clean repository with an initial commit. It offers
-to commit `autodev.toml` to the configured integration branch before immediate
-launch so every new agent worktree starts with the same project contract.
+`ensure` automatically registers the project with the shared runtime. It reuses
+existing worktrees and tmux sessions; it never replaces live agents. Setup
+requires a clean repository with an initial commit. The descriptor must be
+committed to the configured integration branch before immediate launch so every
+new agent worktree starts with the same project contract.
 
 ## The project descriptor
 
@@ -98,7 +131,7 @@ launch so every new agent worktree starts with the same project contract.
 Autodev templates, generated capsules, launch scripts, or copied skills.
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [project]
 id = "acme-app"
@@ -111,6 +144,7 @@ verify_commands = ["uv run pytest"]
 [runtime]
 session_pattern = "autodev-{project}-{agent}"
 ui_port = 8765
+bypass_permissions = false
 
 [providers.codex]
 model = "gpt-5.6-terra"
@@ -158,6 +192,10 @@ A complete two-provider example is available at
 - `ui_port`: Dedicated localhost port for this project's UI, from 1024 through
   65535. The setup wizard selects the first available, unregistered port at or
   above 8765.
+- `bypass_permissions`: Required boolean controlling every worker launched for
+  this project. When true, Autodev passes Codex
+  `--dangerously-bypass-approvals-and-sandbox` or Claude
+  `--dangerously-skip-permissions`. It never changes global client settings.
 
 The default is `autodev-{project}-{agent}`. For example,
 `team_{provider}_{project}_{agent}` renders as
@@ -225,10 +263,15 @@ uv run --project /path/to/autodev autodev stop my-project
 uv run --project /path/to/autodev autodev merge my-project backend
 ```
 
-By default, each CLI retains its configured permission behavior. `ensure
---yolo` maps to that provider's documented permission-bypass flag and should be
+Permission behavior has one source of truth: `runtime.bypass_permissions` in
+the project descriptor. `false` retains each CLI's configured behavior. `true`
+removes the selected provider's worker-level permission controls and should be
 used only when the operator intentionally authorizes unrestricted execution in
-an appropriately isolated environment.
+an appropriately isolated environment. Codex documents the bypass as dangerous
+full access, and Claude recommends bypass mode only in isolated environments;
+Autodev therefore scopes it to managed workers instead of weakening unrelated
+[Codex](https://learn.chatgpt.com/docs/codex/security) or
+[Claude](https://code.claude.com/docs/en/permission-modes) sessions globally.
 
 `merge` fails unless the agent worktree is clean, its complete branch diff is
 inside its write roots, the integration checkout is clean and on
@@ -248,7 +291,8 @@ uv run --project /path/to/autodev autodev projects
 Each project starts an independent UI bound to `127.0.0.1` on its configured
 `runtime.ui_port`. The page exposes only that project, including agent launch,
 goal, stop, Git state, ownership state, and an editor for the complete
-`autodev.toml`.
+`autodev.toml`, including worker definitions, tmux naming, UI port, and
+permission policy.
 
 Run one UI in the foreground:
 
@@ -278,7 +322,12 @@ not a hosted multi-user service.
 
 ## Updating the shared runtime
 
-Pull once in the Autodev checkout; no managed project changes are needed:
+Version 0.2 uses descriptor schema 2. Upgrade an existing schema-1 descriptor
+by changing `schema_version` to `2` and adding an explicit
+`runtime.bypass_permissions = false` or `true`; schema-1 descriptors fail fast.
+
+Pull once in the Autodev checkout, then apply the schema update to each managed
+project descriptor:
 
 ```sh
 git -C /path/to/autodev pull --ff-only
@@ -287,7 +336,8 @@ uv sync --project /path/to/autodev --locked --python 3.12
 
 Every subsequent `uv run --project /path/to/autodev autodev ...` invocation
 uses the updated core. Existing agent worktrees and sessions remain under
-`AUTODEV_HOME`.
+`AUTODEV_HOME`. The installed Codex and Claude skill links already point into
+that checkout, so no skill reinstall is needed after a pull.
 
 ## Debugging
 

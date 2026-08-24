@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 DESCRIPTOR_NAME = "autodev.toml"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SUPPORTED_PROVIDERS = frozenset({"codex", "claude"})
 DEFAULT_SESSION_PATTERN = "autodev-{project}-{agent}"
 DEFAULT_UI_PORT = 8765
@@ -53,6 +53,7 @@ class ProjectConfig:
     verify_commands: tuple[str, ...]
     session_pattern: str
     ui_port: int
+    bypass_permissions: bool
     providers: dict[str, ProviderConfig]
     agents: tuple[AgentConfig, ...]
 
@@ -85,6 +86,12 @@ def _optional_string(value: Any, label: str) -> str | None:
 def _ui_port(value: Any) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not 1024 <= value <= 65535:
         raise ConfigError("runtime.ui_port must be an integer from 1024 through 65535")
+    return value
+
+
+def _boolean(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{label} must be true or false")
     return value
 
 
@@ -235,6 +242,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         )
     )
     ui_port = _ui_port(runtime_data.get("ui_port"))
+    bypass_permissions = _boolean(runtime_data.get("bypass_permissions"), "runtime.bypass_permissions")
 
     repo_root = _git_root(descriptor)
     if repo_root != descriptor.parent.resolve():
@@ -294,6 +302,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         verify_commands=verify_commands,
         session_pattern=session_pattern,
         ui_port=ui_port,
+        bypass_permissions=bypass_permissions,
         providers=providers,
         agents=result_agents,
     )

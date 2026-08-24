@@ -60,6 +60,7 @@ def _project_payload(project: ProjectConfig) -> dict[str, Any]:
         "base_branch": project.base_branch,
         "ui_port": project.ui_port,
         "session_pattern": project.session_pattern,
+        "bypass_permissions": project.bypass_permissions,
         "config_dirty": _descriptor_dirty(project),
         "agents": [status.as_dict() for status in statuses(project, project.agents)],
     }
@@ -229,7 +230,6 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
                     base_ref=None,
                     start=True,
                     send_initial_goal=bool(body.get("send_goal", True)),
-                    yolo=bool(body.get("yolo", False)),
                 )
             elif action == "goal":
                 result = [{"agent": agent.id, "goal_sent": bool(send_goal(project, agent))} for agent in agents]

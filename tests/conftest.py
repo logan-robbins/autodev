@@ -41,6 +41,7 @@ def project_repo(tmp_path: Path) -> Path:
             verify_commands=(),
             session_pattern=DEFAULT_SESSION_PATTERN,
             ui_port=8765,
+            bypass_permissions=False,
             agents=(
                 DescriptorAgent(
                     id="backend",

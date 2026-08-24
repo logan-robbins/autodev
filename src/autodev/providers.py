@@ -49,7 +49,7 @@ def launch_command(
     provider: ProviderConfig,
     worktree: Path,
     *,
-    yolo: bool,
+    bypass_permissions: bool,
     initial_prompt: str | None,
 ) -> list[str]:
     """Build one interactive host-CLI command without installing or wrapping it."""
@@ -60,7 +60,7 @@ def launch_command(
             command.extend(["--model", provider.model])
         if provider.effort:
             command.extend(["--config", f"model_reasoning_effort={json.dumps(provider.effort)}"])
-        if yolo:
+        if bypass_permissions:
             command.append("--dangerously-bypass-approvals-and-sandbox")
     elif provider.name == "claude":
         command = [executable]
@@ -68,7 +68,7 @@ def launch_command(
             command.extend(["--model", provider.model])
         if provider.effort:
             command.extend(["--effort", provider.effort])
-        if yolo:
+        if bypass_permissions:
             command.append("--dangerously-skip-permissions")
     else:  # Config validation should make this unreachable.
         raise ProviderError(f"unsupported provider: {provider.name}")

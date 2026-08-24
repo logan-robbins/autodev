@@ -34,11 +34,12 @@ def render_full_descriptor(
     verify_commands: tuple[str, ...],
     session_pattern: str,
     ui_port: int,
+    bypass_permissions: bool,
     agents: tuple[DescriptorAgent, ...],
     provider_settings: dict[str, dict[str, str | None]] | None = None,
 ) -> str:
     lines = [
-        "schema_version = 1",
+        "schema_version = 2",
         "",
         "[project]",
         f"id = {_toml_string(project_id)}",
@@ -51,6 +52,7 @@ def render_full_descriptor(
         "[runtime]",
         f"session_pattern = {_toml_string(session_pattern)}",
         f"ui_port = {ui_port}",
+        f"bypass_permissions = {'true' if bypass_permissions else 'false'}",
     ]
     for provider in sorted(provider_settings or {}):
         settings = provider_settings[provider]

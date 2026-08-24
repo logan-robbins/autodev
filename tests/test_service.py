@@ -36,6 +36,7 @@ def test_project_ui_exposes_only_its_bound_project(project_ui) -> None:
 
     assert payload["id"] == "sample-project"
     assert payload["ui_port"] == 8765
+    assert payload["bypass_permissions"] is False
     assert payload["agents"][0]["provider"] == "codex"
 
     with urlopen(f"{url}/") as response:
@@ -60,8 +61,10 @@ def test_project_ui_mutations_require_token(project_ui) -> None:
 def test_project_ui_saves_valid_configuration_atomically(project_ui) -> None:
     url, token, project = project_ui
     original = project.descriptor.read_text(encoding="utf-8")
-    updated = original.replace('name = "Sample Project"', 'name = "Renamed Project"').replace(
-        "ui_port = 8765", "ui_port = 8878"
+    updated = (
+        original.replace('name = "Sample Project"', 'name = "Renamed Project"')
+        .replace("ui_port = 8765", "ui_port = 8878")
+        .replace("bypass_permissions = false", "bypass_permissions = true")
     )
     request = Request(
         f"{url}/api/config",
@@ -75,6 +78,7 @@ def test_project_ui_saves_valid_configuration_atomically(project_ui) -> None:
 
     assert payload["project"]["name"] == "Renamed Project"
     assert payload["project"]["ui_port"] == 8878
+    assert payload["project"]["bypass_permissions"] is True
     assert load_project(project.root).name == "Renamed Project"
     assert payload["project"]["config_dirty"] is True
 

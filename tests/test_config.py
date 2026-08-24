@@ -24,6 +24,7 @@ def test_loads_single_file_project_contract(project_repo: Path) -> None:
     assert project.providers["codex"].model is None
     assert project.session_pattern == "autodev-{project}-{agent}"
     assert project.ui_port == 8765
+    assert project.bypass_permissions is False
 
 
 def test_discovers_descriptor_from_child_directory(project_repo: Path) -> None:
@@ -120,4 +121,19 @@ def test_rejects_invalid_project_ui_port(project_repo: Path, port: object) -> No
     )
 
     with pytest.raises(ConfigError, match="runtime.ui_port"):
+        load_project(project_repo)
+
+
+@pytest.mark.parametrize("value", ["0", "1", '"true"'])
+def test_rejects_non_boolean_permission_bypass(project_repo: Path, value: str) -> None:
+    descriptor = project_repo / "autodev.toml"
+    descriptor.write_text(
+        descriptor.read_text(encoding="utf-8").replace(
+            "bypass_permissions = false",
+            f"bypass_permissions = {value}",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="runtime.bypass_permissions"):
         load_project(project_repo)

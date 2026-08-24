@@ -99,7 +99,6 @@ def start_session(
     agent: AgentConfig,
     workspace: Workspace,
     *,
-    yolo: bool,
     send_initial_goal: bool,
 ) -> bool:
     """Start one session and return True, or return False when it already exists."""
@@ -108,7 +107,12 @@ def start_session(
         return False
     provider = project.providers[agent.provider]
     prompt = render_goal(project, agent) if send_initial_goal else None
-    command = launch_command(provider, workspace.path, yolo=yolo, initial_prompt=prompt)
+    command = launch_command(
+        provider,
+        workspace.path,
+        bypass_permissions=project.bypass_permissions,
+        initial_prompt=prompt,
+    )
     _tmux(
         "new-session",
         "-d",

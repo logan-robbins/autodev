@@ -28,7 +28,6 @@ class WizardResult:
     project: ProjectConfig
     commit: bool
     launch: bool
-    yolo: bool
     start_ui: bool
 
 
@@ -211,6 +210,12 @@ def run_setup_wizard(
         output=output,
     )
     ui_port = _ask_ui_port(input_fn=input_fn, output=output)
+    bypass_permissions = _yes_no(
+        "Bypass permission controls for every Autodev-managed worker?",
+        input_fn=input_fn,
+        default=False,
+        output=output,
+    )
 
     agents: list[DescriptorAgent] = []
     while True:
@@ -310,6 +315,7 @@ def run_setup_wizard(
         verify_commands=verify_commands,
         session_pattern=session_pattern,
         ui_port=ui_port,
+        bypass_permissions=bypass_permissions,
         agents=tuple(agents),
         provider_settings=provider_settings,
     )
@@ -340,16 +346,10 @@ def run_setup_wizard(
         )
     else:
         output("Immediate launch is disabled until autodev.toml is committed.")
-    yolo = launch and _yes_no(
-        "Bypass provider permission controls?",
-        input_fn=input_fn,
-        default=False,
-        output=output,
-    )
     start_ui = _yes_no(
         f"Start the project UI at http://127.0.0.1:{project.ui_port}/ now?",
         input_fn=input_fn,
         default=True,
         output=output,
     )
-    return WizardResult(project=project, commit=commit, launch=launch, yolo=yolo, start_ui=start_ui)
+    return WizardResult(project=project, commit=commit, launch=launch, start_ui=start_ui)

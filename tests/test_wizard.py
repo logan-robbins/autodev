@@ -34,6 +34,7 @@ def test_wizard_writes_complete_descriptor_without_launching(
             "uv run pytest",
             "team_{provider}_{project}_{agent}",
             "8877",
+            "y",
             "backend",
             "codex",
             "Own the backend.",
@@ -61,11 +62,11 @@ def test_wizard_writes_complete_descriptor_without_launching(
 
     assert result.commit is True
     assert result.launch is False
-    assert result.yolo is False
     assert result.start_ui is False
     assert result.project.id == "wizard-project"
     assert result.project.session_pattern == "team_{provider}_{project}_{agent}"
     assert result.project.ui_port == 8877
+    assert result.project.bypass_permissions is True
     assert result.project.providers["codex"].command == "codex"
     assert load_project(project_repo) == result.project
     assert any("Descriptor preview" in line for line in output)

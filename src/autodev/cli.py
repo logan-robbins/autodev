@@ -23,6 +23,7 @@ from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
+from autodev.skill_install import install_operator_skill
 from autodev.state import Registry, autodev_home
 from autodev.wizard import run_setup_wizard
 
@@ -55,6 +56,7 @@ def _project_summary(project: ProjectConfig) -> dict[str, Any]:
         "base_branch": project.base_branch,
         "session_pattern": project.session_pattern,
         "ui_port": project.ui_port,
+        "bypass_permissions": project.bypass_permissions,
         "agents": [
             {
                 "id": agent.id,
@@ -175,6 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("project", nargs="?", help="existing Git repository root (prompted when omitted)")
 
+    skill = subparsers.add_parser("skill", help="manage the repository-owned operator skill")
+    skill_commands = skill.add_subparsers(dest="skill_command", required=True)
+    skill_commands.add_parser("install", help="link the operator skill into Codex and Claude Code")
+
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
     validate.add_argument("--json", action="store_true")
@@ -198,7 +204,6 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument("--base-ref", help="base ref for newly created worktrees")
     ensure.add_argument("--no-start", action="store_true", help="prepare worktrees without starting agents")
     ensure.add_argument("--send-goal", action="store_true", help="start or continue the standing goal")
-    ensure.add_argument("--yolo", action="store_true", help="bypass the selected CLI's permission controls")
     ensure.add_argument("--json", action="store_true")
 
     goal = subparsers.add_parser("goal", help="send the standing goal to running agent sessions")
@@ -231,6 +236,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
     active_registry = registry or Registry()
+    if args.command == "skill":
+        if args.skill_command != "install":
+            raise AssertionError(f"unhandled skill command: {args.skill_command}")
+        for link in install_operator_skill():
+            state = "installed" if link.created else "already installed"
+            print(f"{link.client}: {state} {link.path} -> {link.source}")
+        return 0
     if args.command == "setup":
         result = run_setup_wizard(args.project)
         _validate_base(result.project)
@@ -246,7 +258,6 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
                 base_ref=None,
                 start=True,
                 send_initial_goal=True,
-                yolo=result.yolo,
             )
             for item in started:
                 state = "started" if item["session_started"] else "reused"
@@ -321,7 +332,6 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             base_ref=args.base_ref,
             start=not args.no_start,
             send_initial_goal=args.send_goal,
-            yolo=args.yolo,
         )
         if args.json:
             _print_json({"project": project.id, "agents": result})
