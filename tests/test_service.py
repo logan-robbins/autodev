@@ -152,6 +152,21 @@ def test_api_unknown_feature_is_404(product_ui) -> None:
     assert error.value.code == 404
 
 
+def test_dashboard_is_light_product_tree_built_from_json(product_ui) -> None:
+    url, _token, _project = product_ui
+    with urlopen(f"{url}/") as response:
+        page = response.read().decode()
+    # light palette + product structure, built by globbing feature.json (no scraping).
+    assert "#f6f7f9" in page
+    assert "/api/product" in page
+    assert "loopStrip" in page  # per-feature loop strip
+    assert "drill(" in page and "/api/features/" in page  # drill to the run DAG
+    assert "Product" in page
+    # existing config editor stays.
+    assert "Project configuration" in page
+    assert '<textarea id="config"' in page
+
+
 def test_project_ui_exposes_only_its_bound_project(project_ui) -> None:
     url, _token, _project = project_ui
     with urlopen(f"{url}/api/project") as response:

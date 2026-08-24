@@ -139,38 +139,83 @@ def _dashboard(project: ProjectConfig, token: str) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Autodev · {escape(project.name)}</title><style>
-body{{font:15px system-ui,sans-serif;margin:0;background:#101418;color:#e9eef2}}main{{max-width:1100px;margin:36px auto;padding:0 24px}}
-h1{{font-size:30px;margin-bottom:4px}}.panel{{background:#192027;border:1px solid #303b44;border-radius:12px;padding:18px;margin:18px 0}}
-table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px;border-bottom:1px solid #303b44}}button{{margin:4px;padding:7px 12px}}
-.ok{{color:#72d39a}}.off{{color:#f1b86a}}.error{{color:#ff7b72}}code{{color:#a9d5ff}}textarea{{box-sizing:border-box;width:100%;min-height:480px;
-background:#0d1117;color:#d8e2ea;border:1px solid #44515c;border-radius:8px;padding:14px;font:13px ui-monospace,monospace;line-height:1.45}}
-#message{{min-height:22px}}.meta{{color:#aab6bf}}</style></head><body><main><h1 id="title"></h1><p class="meta" id="meta">Loading…</p>
+body{{font:15px system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2530}}
+main{{max-width:1100px;margin:36px auto;padding:0 24px}}h1{{font-size:30px;margin-bottom:4px}}
+.panel{{background:#fff;border:1px solid #e2e6eb;border-radius:12px;padding:18px;margin:18px 0;box-shadow:0 1px 2px rgba(20,30,45,.04)}}
+.card{{background:#fff;border:1px solid #e2e6eb;border-radius:10px;padding:12px 14px;margin:10px 0}}
+.pillar h3{{margin:14px 0 6px;font-size:16px;color:#3a4653}}
+.row{{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}}
+.badge{{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;text-transform:capitalize;background:#eef1f5;color:#3a4653;border:1px solid #dbe0e6}}
+.badge.engineering{{background:#e7f0ff;color:#1d6fe0}}.badge.shipped{{background:#e6f6ec;color:#1a7f3c}}
+.loop span{{font:13px ui-monospace,monospace;margin-right:8px;color:#5a6675}}
+.loop .done{{color:#1a7f3c}}.loop .active{{color:#1d6fe0;font-weight:700}}.loop .blocked{{color:#c0392b}}
+.metrics{{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 2px}}.metric{{background:#eef1f5;border-radius:8px;padding:8px 14px}}
+.metric b{{font-size:20px;display:block}}.muted{{color:#6b7683;font-size:13px}}
+.node{{border-left:3px solid #dbe0e6;padding:4px 10px;margin:4px 0}}.node.active{{border-color:#1d6fe0;background:#f2f7ff}}
+.node.done,.node.green{{border-color:#1a7f3c}}.node.failed,.node.red{{border-color:#c0392b}}
+button{{margin:2px 4px 2px 0;padding:6px 11px;border:1px solid #cdd4dc;border-radius:7px;background:#fff;cursor:pointer}}
+button:hover{{background:#f0f3f7}}code{{color:#2b5b9c}}
+textarea{{box-sizing:border-box;width:100%;min-height:360px;background:#fbfcfd;color:#1c2530;border:1px solid #cdd4dc;border-radius:8px;padding:14px;font:13px ui-monospace,monospace;line-height:1.45}}
+#message{{min-height:22px}}.meta{{color:#6b7683}}.unmet{{color:#c0392b;font-size:13px}}
+</style></head><body><main><h1 id="title"></h1><p class="meta" id="meta">Loading…</p>
+<section class="panel"><h2>Product</h2><div class="metrics" id="metrics"></div><div id="product">Loading…</div></section>
 <section class="panel"><h2>Agents</h2><div id="agents">Loading…</div></section>
 <section class="panel"><h2>Project configuration</h2><p>Edit the canonical <code>autodev.toml</code>. Saves are validated and atomic; commit accepted changes in Git.</p>
 <textarea id="config" spellcheck="false"></textarea><p><button onclick="saveConfig()">Validate and save</button></p><p id="message"></p></section>
 </main><script>
 const token={safe_token}; const initialTitle={safe_title};
 const esc=value=>String(value).replace(/[&<>"']/g,char=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
+const SHORT={{'product-manager':'PM','project-manager':'PjM','engineering':'Eng'}};
+const GLYPH={{done:'\\u2713',active:'\\u25cf',pending:'\\u25cb',blocked:'\\u2715'}};
 async function request(path, options={{}}){{
   const response=await fetch(path,options); const data=await response.json();
   if(!response.ok) throw new Error(data.error||`HTTP ${{response.status}}`); return data;
 }}
+function loopStrip(loop){{
+  return `<span class="loop">${{loop.map(s=>`<span class="${{s.s}}">${{SHORT[s.role]||s.role}} ${{GLYPH[s.s]||''}}</span>`).join('')}}</span>`;
+}}
+async function drill(featureId){{
+  const target=document.getElementById(`run-${{featureId}}`); target.textContent='Loading run…';
+  try{{
+    const v=await request(`/api/features/${{featureId}}/run`);
+    const nodes=v.run?v.run.nodes.map(n=>`<div class="node ${{n.status}} ${{n.step_id===v.run.active_step_id?'active':''}}">`+
+      `<b>${{esc(n.kind)}}</b> ${{esc(n.step_id)}} · ${{esc(n.status)}}`+
+      `${{n.tokens!=null?` · ${{n.tokens}} tok`:''}}${{n.gloss?` — ${{esc(n.gloss)}}`:''}}</div>`).join(''):'<p class="muted">No run yet.</p>';
+    const leaves=(v.leaves||[]).map(l=>`<li>${{esc(l.id)}} <span class="muted">(${{esc(l.status)}}${{l.pod?', '+esc(l.pod):''}})</span></li>`).join('');
+    const unmet=(v.unmet_depends_on||[]).map(e=>`<div class="unmet">${{esc(e[0])}} blocked on ${{esc(e[1])}}</div>`).join('');
+    target.innerHTML=`<div>${{nodes}}</div><h4>Leaves</h4><ul>${{leaves||'<li class="muted">none</li>'}}</ul>${{unmet}}`;
+  }}catch(error){{target.textContent=error.message;}}
+}}
+async function loadProduct(){{
+  const data=await request('/api/product');
+  const counts={{}};
+  data.pillars.forEach(p=>p.features.forEach(f=>{{counts[f.phase]=(counts[f.phase]||0)+1;}}));
+  document.getElementById('metrics').innerHTML=Object.keys(counts).sort().map(k=>
+    `<div class="metric"><b>${{counts[k]}}</b><span class="muted">${{esc(k)}}</span></div>`).join('')||'<span class="muted">No features yet.</span>';
+  document.getElementById('product').innerHTML=data.pillars.map(p=>
+    `<div class="pillar"><h3>${{esc(p.id)}}</h3>${{p.features.map(f=>
+      `<div class="card"><div class="row"><div><b>${{esc(f.name)}}</b> `+
+      `<span class="badge ${{f.phase}}">${{esc(f.phase)}}</span> ${{f.approval==='proposed'?'<span class="badge">proposed</span>':''}}</div>`+
+      `<div>${{loopStrip(f.loop)}}<button onclick="drill('${{f.id}}')">Details</button></div></div>`+
+      `<div id="run-${{f.id}}" class="muted"></div></div>`).join('')}}</div>`).join('')||'<p class="muted">No pillars yet.</p>';
+}}
 async function action(action, agent){{
-  try{{await request(`/api/actions/${{action}}`,{{method:'POST',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{agents:[agent],send_goal:true}})}});await loadProject();}}
+  try{{await request(`/api/actions/${{action}}`,{{method:'POST',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{agents:[agent],send_goal:true}})}});await loadAgents();}}
   catch(error){{document.getElementById('message').textContent=error.message;}}
 }}
-async function loadProject(){{
+async function loadAgents(){{
   const p=await request('/api/project'); document.title=`Autodev · ${{p.name}}`; document.getElementById('title').textContent=p.name||initialTitle;
   document.getElementById('meta').textContent=`${{p.root}} · port ${{p.ui_port}} · config ${{p.config_dirty?'modified':'committed'}}`;
-  document.getElementById('agents').innerHTML=`<table><thead><tr><th>Agent</th><th>Provider</th><th>Session</th><th>Git</th><th>Actions</th></tr></thead><tbody>${{p.agents.map(a=>
-    `<tr><td>${{esc(a.agent)}}</td><td>${{esc(a.provider)}}</td><td class="${{a.running?'ok':'off'}}">${{a.running?'running':'offline'}}<br><code>${{esc(a.session)}}</code></td><td>${{a.ownership_violations.length?'VIOLATION':(a.git_status?'dirty':'clean')}}</td><td><button onclick="action('ensure','${{a.agent}}')">Launch</button><button onclick="action('goal','${{a.agent}}')">Goal</button><button onclick="action('stop','${{a.agent}}')">Stop</button></td></tr>`).join('')}}</tbody></table>`;
+  document.getElementById('agents').innerHTML=`<table style="width:100%"><tbody>${{p.agents.map(a=>
+    `<tr><td>${{esc(a.agent)}}</td><td>${{esc(a.provider)}}</td><td>${{a.running?'running':'offline'}}</td><td>${{a.ownership_violations.length?'VIOLATION':(a.git_status?'dirty':'clean')}}</td><td><button onclick="action('ensure','${{a.agent}}')">Launch</button><button onclick="action('goal','${{a.agent}}')">Goal</button><button onclick="action('stop','${{a.agent}}')">Stop</button></td></tr>`).join('')}}</tbody></table>`;
 }}
 async function loadConfig(){{const data=await request('/api/config');document.getElementById('config').value=data.content;}}
 async function saveConfig(){{const message=document.getElementById('message');message.textContent='Validating…';try{{
   await request('/api/config',{{method:'PUT',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{content:document.getElementById('config').value}})}});
-  message.textContent='Saved. Commit autodev.toml in Git; restart this UI if ui_port changed.';await loadProject();
+  message.textContent='Saved. Commit autodev.toml in Git; restart this UI if ui_port changed.';await loadProduct();
 }}catch(error){{message.textContent=error.message;}}}}
-Promise.all([loadProject(),loadConfig()]).catch(error=>document.getElementById('message').textContent=error.message);setInterval(loadProject,5000);
+function refresh(){{loadProduct().catch(()=>{{}});loadAgents().catch(()=>{{}});}}
+Promise.all([loadAgents(),loadProduct(),loadConfig()]).catch(error=>document.getElementById('message').textContent=error.message);setInterval(refresh,5000);
 </script></body></html>"""
 
 
