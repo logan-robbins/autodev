@@ -251,26 +251,27 @@ def set_run_ref(project, feature_id: str, run_id: str) -> Path
 @dataclass(frozen=True)
 class StageNode:
     step_id: str
-    kind: str                      # plan|search|contract|implement|integrate|reconcile
-    status: str                    # declared|running|done|failed  (verify -> red|green)
+    kind: str  # plan|search|contract|implement|integrate|reconcile
+    status: str  # declared|running|done|failed  (verify -> red|green)
     parent: str | None
-    inputs: tuple[str, ...]        # -> edges (fan-in when len>1)
+    inputs: tuple[str, ...]  # -> edges (fan-in when len>1)
     agent: str | None
     agent_type: str | None
     tokens: int | None
     gloss: str | None
     artifacts: tuple[str, ...]
 
+
 @dataclass(frozen=True)
 class RunView:
     run_id: str
     role: str
     node_ref: dict
-    status: str                    # running|done|failed
-    nodes: tuple[StageNode, ...]   # topologically ordered
+    status: str  # running|done|failed
+    nodes: tuple[StageNode, ...]  # topologically ordered
     edges: tuple[tuple[str, str], ...]
-    metrics: dict                  # {"tool_calls": int, "tokens": int}
-    active_step_id: str | None     # default-selected node in the UI
+    metrics: dict  # {"tool_calls": int, "tokens": int}
+    active_step_id: str | None  # default-selected node in the UI
 ```
 
 `FeatureView` (A8) = `feature.json` fields + derived `phase`/`owner_role` + embedded `RunView` when
