@@ -29,11 +29,63 @@ class ProjectPaths:
     home: Path
     worktrees: Path
     logs: Path
+    runs: Path
+    laws: Path
 
 
 def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
     root = (home or autodev_home()) / "projects" / project_id
-    return ProjectPaths(home=root, worktrees=root / "worktrees", logs=root / "logs")
+    return ProjectPaths(
+        home=root,
+        worktrees=root / "worktrees",
+        logs=root / "logs",
+        runs=root / "runs",
+        laws=root / "laws",
+    )
+
+
+def role_law_path(project_id: str, role: str, *, home: Path | None = None) -> Path:
+    return project_paths(project_id, home=home).laws / f"{role}.md"
+
+
+def write_role_law(project_id: str, role: str, content: str, *, home: Path | None = None) -> Path:
+    """Persist one role's composed law under AUTODEV_HOME (0600), outside the worktree.
+
+    Kept out of the managed repo so it never collides with the project's own
+    CLAUDE.md and never trips the ownership check.
+    """
+    path = role_law_path(project_id, role, home=home)
+    atomic_write_text(path, content, mode=0o600)
+    return path
+
+
+def read_role_law(project_id: str, role: str, *, home: Path | None = None) -> str:
+    path = role_law_path(project_id, role, home=home)
+    if not path.exists():
+        raise ConfigError(f"no composed law for role {role!r} at {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def atomic_write_text(path: Path, content: str, *, mode: int | None = None) -> None:
+    """Write ``content`` to ``path`` atomically (temp file, fsync, replace).
+
+    The same durable-replace pattern the registry uses, exposed for the typed
+    product-tree writes and the composed-law file. Parent directories are created.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            temp_path.chmod(mode)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 class Registry:

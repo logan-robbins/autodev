@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -19,13 +21,25 @@ from autodev.config import (
 )
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.policy import PolicyInput, decide
+from autodev.product import (
+    ProductError,
+    add_features,
+    decompose_feature,
+    set_approval,
+    set_leaf_status,
+)
 from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
-from autodev.state import Registry, autodev_home
+from autodev.state import Registry, autodev_home, project_paths, read_role_law
+from autodev.trace import emit, event_from_hook, read_events, read_tokens
 from autodev.wizard import run_setup_wizard
+
+CHARTER_MAX_CONTEXT = 10_000
+POLICY_BLOCK_EXIT = 2
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -155,6 +169,145 @@ def _command_version(command: str, flag: str = "--version") -> str:
     return result.stdout.strip() or f"exit {result.returncode}"
 
 
+def _hook_run_dir(run_id: str) -> Path:
+    """Resolve a worker hook's run directory from its session env (A5c)."""
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    if not project_id:
+        raise ConfigError("hook verbs require AUTODEV_PROJECT in the session environment")
+    return project_paths(project_id).runs / run_id
+
+
+def _trace_emit(run_id: str) -> int:
+    """Fold one hook payload (stdin JSON) into the run trace; never blocks a worker."""
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        print("autodev: trace emit received non-JSON hook payload", file=sys.stderr)
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    if not project_id:
+        print("autodev: trace emit requires AUTODEV_PROJECT", file=sys.stderr)
+        return 0
+    verify_commands: tuple[str, ...] = ()
+    with contextlib.suppress(ConfigError):
+        verify_commands = Registry().resolve(project_id).verify_commands
+    provider = os.environ.get("AUTODEV_PROVIDER")
+    transcript = payload.get("transcript_path")
+    if provider and transcript and "tokens" not in payload:
+        with contextlib.suppress(Exception):
+            payload = {**payload, "tokens": read_tokens(Path(transcript), provider)}
+    event = event_from_hook(payload, verify_commands=verify_commands)
+    if event is None:
+        return 0
+    emit(_hook_run_dir(run_id), event)
+    return 0
+
+
+def _charter_digest(run_id: str) -> int:
+    """Print the run role's composed law as hook additionalContext (<=10k).
+
+    Registered on SessionStart + UserPromptSubmit (A5a) so the durable law is
+    re-injected from disk after every compaction and at every pass — the layer
+    that survives regardless of the append-system-prompt outcome (E-1).
+    """
+    raw = sys.stdin.read()
+    event_name = "SessionStart"
+    if raw.strip():
+        with contextlib.suppress(json.JSONDecodeError):
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                event_name = payload.get("hook_event_name", event_name)
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    role = os.environ.get("AUTODEV_ROLE")
+    if not project_id or not role:
+        return 0
+    try:
+        law = read_role_law(project_id, role)
+    except ConfigError:
+        return 0
+    context = law[:CHARTER_MAX_CONTEXT]
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}))
+    return 0
+
+
+def _red_test_recorded(run_id: str) -> bool:
+    """True when a failing (red) verify step is already in this pass's trace."""
+    try:
+        events = read_events(_hook_run_dir(run_id))
+    except (ConfigError, OSError):
+        return False
+    return any(e.get("type") == "step_finished" and e.get("status") == "red" for e in events)
+
+
+def _policy_check(run_id: str) -> int:
+    """PreToolUse gate: exit 2 (reason on stderr) to hard-block a denied tool call.
+
+    Role/kind come from the session env (A5c). With none set (a non-orchestrated
+    session) nothing is gated. exit 2 is the portable hard block verified on both
+    providers; a denied write never runs.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    role = os.environ.get("AUTODEV_ROLE")
+    kind = os.environ.get("AUTODEV_KIND")
+    if not role or not kind:
+        return 0
+    decision = decide(
+        PolicyInput(
+            role=role,
+            kind=kind,
+            tool_name=str(payload.get("tool_name", "")),
+            tool_input=payload.get("tool_input") or {},
+            red_test=_red_test_recorded(run_id),
+        )
+    )
+    if decision.allow:
+        return 0
+    print(f"Blocked by Autodev policy: {decision.reason}", file=sys.stderr)
+    return POLICY_BLOCK_EXIT
+
+
+def _stdin_json_list(label: str) -> list:
+    try:
+        payload = json.loads(sys.stdin.read() or "[]")
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{label} must be a JSON array on stdin: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ConfigError(f"{label} must be a JSON array")
+    return payload
+
+
+def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
+    """Typed tree-authoring verbs (decision #3): schema-validated, atomic writes."""
+    if args.product_command == "add-features":
+        paths = add_features(project, args.pillar, _stdin_json_list("features"))
+        print(f"wrote {len(paths)} feature file(s) under pillar {args.pillar}")
+    elif args.product_command == "decompose-feature":
+        paths = decompose_feature(project, args.feature, _stdin_json_list("leaves"))
+        print(f"wrote {len(paths)} file(s) for feature {args.feature}")
+    elif args.product_command == "set-leaf-status":
+        path = set_leaf_status(project, args.feature, args.leaf, args.status)
+        print(f"set {args.feature}/{args.leaf} status to {args.status} ({path})")
+    elif args.product_command == "set-approval":
+        path = set_approval(project, args.feature, args.approval)
+        print(f"set {args.feature} approval to {args.approval} ({path})")
+    else:  # argparse required=True makes this unreachable.
+        raise AssertionError(f"unhandled product command: {args.product_command}")
+    return 0
+
+
 def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "project",
@@ -180,6 +333,41 @@ def build_parser() -> argparse.ArgumentParser:
     skill = subparsers.add_parser("skill", help="manage the repository-owned operator skill")
     skill_commands = skill.add_subparsers(dest="skill_command", required=True)
     skill_commands.add_parser("install", help="link the operator skill into Codex and Claude Code")
+
+    trace = subparsers.add_parser("trace", help="record run trace events emitted by worker hooks")
+    trace_commands = trace.add_subparsers(dest="trace_command", required=True)
+    trace_emit = trace_commands.add_parser("emit", help="append one event from a hook payload on stdin")
+    trace_emit.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
+
+    charter = subparsers.add_parser("charter", help="inject durable role law into a worker via hooks")
+    charter_commands = charter.add_subparsers(dest="charter_command", required=True)
+    charter_digest = charter_commands.add_parser("digest", help="print the role law as hook additionalContext")
+    charter_digest.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
+
+    policy = subparsers.add_parser("policy", help="enforce the per-role/kind PreToolUse policy")
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    policy_check = policy_commands.add_parser("check", help="block a denied tool call (exit 2) from a hook payload")
+    policy_check.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
+
+    product = subparsers.add_parser("product", help="author the product tree through typed, validated verbs")
+    product_commands = product.add_subparsers(dest="product_command", required=True)
+    add_features_cmd = product_commands.add_parser(
+        "add-features", help="write feature.json files (JSON array on stdin)"
+    )
+    _add_project_argument(add_features_cmd, required=True)
+    add_features_cmd.add_argument("--pillar", required=True)
+    decompose_cmd = product_commands.add_parser("decompose-feature", help="write leaf.json files (JSON array on stdin)")
+    _add_project_argument(decompose_cmd, required=True)
+    decompose_cmd.add_argument("--feature", required=True)
+    leaf_status_cmd = product_commands.add_parser("set-leaf-status", help="update one leaf's status")
+    _add_project_argument(leaf_status_cmd, required=True)
+    leaf_status_cmd.add_argument("--feature", required=True)
+    leaf_status_cmd.add_argument("--leaf", required=True)
+    leaf_status_cmd.add_argument("--status", required=True)
+    approval_cmd = product_commands.add_parser("set-approval", help="flip a feature's approval gate")
+    _add_project_argument(approval_cmd, required=True)
+    approval_cmd.add_argument("--feature", required=True)
+    approval_cmd.add_argument("--approval", required=True, choices=["proposed", "approved"])
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
@@ -243,6 +431,18 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             state = "installed" if link.created else "already installed"
             print(f"{link.client}: {state} {link.path} -> {link.source}")
         return 0
+    if args.command == "trace":
+        if args.trace_command != "emit":
+            raise AssertionError(f"unhandled trace command: {args.trace_command}")
+        return _trace_emit(args.run_id)
+    if args.command == "charter":
+        if args.charter_command != "digest":
+            raise AssertionError(f"unhandled charter command: {args.charter_command}")
+        return _charter_digest(args.run_id)
+    if args.command == "policy":
+        if args.policy_command != "check":
+            raise AssertionError(f"unhandled policy command: {args.policy_command}")
+        return _policy_check(args.run_id)
     if args.command == "setup":
         result = run_setup_wizard(args.project)
         _validate_base(result.project)
@@ -285,6 +485,8 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             print("no registered projects")
         return 0
     project = _resolve_project(args.project, active_registry)
+    if args.command == "product":
+        return _product_verb(project, args)
     if args.command == "ui":
         serve_project(project)
         return 0
@@ -383,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return run(args)
-    except (ConfigError, ProviderError, SessionError, RuntimeError) as exc:
+    except (ConfigError, ProductError, ProviderError, SessionError, RuntimeError) as exc:
         print(f"autodev: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

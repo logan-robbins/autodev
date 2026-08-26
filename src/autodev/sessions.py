@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -13,6 +15,7 @@ from autodev.config import AgentConfig, ProjectConfig, render_session_name
 from autodev.prompts import render_goal
 from autodev.providers import launch_command
 from autodev.state import project_paths
+from autodev.trace import hook_config
 from autodev.workspaces import (
     Workspace,
     git_status,
@@ -24,6 +27,53 @@ from autodev.workspaces import (
 
 class SessionError(RuntimeError):
     """Raised when the tmux-backed agent runtime is unavailable."""
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """Binds a launched session to one orchestrator run so its hooks resolve.
+
+    The env pairs below are exported into the tmux session (A5c); the fired hook
+    verbs (``autodev trace emit`` / ``policy check`` / ``charter digest``) read
+    them to find their run directory, role, and kind.
+    """
+
+    run_id: str
+    role: str
+    kind: str
+    provider: str | None = None
+
+
+def autodev_command() -> list[str]:
+    """The argv a fired hook uses to re-enter Autodev.
+
+    Absolute interpreter + ``-m autodev`` so it resolves regardless of the
+    worker's PATH — the worker's shell may not have ``autodev`` on it.
+    """
+    return [sys.executable, "-m", "autodev"]
+
+
+def _session_env(project: ProjectConfig, run: RunContext) -> dict[str, str]:
+    env = {
+        "AUTODEV_PROJECT": project.id,
+        "AUTODEV_RUN_ID": run.run_id,
+        "AUTODEV_ROLE": run.role,
+        "AUTODEV_KIND": run.kind,
+    }
+    if run.provider:
+        env["AUTODEV_PROVIDER"] = run.provider
+    home = os.environ.get("AUTODEV_HOME")
+    if home:
+        env["AUTODEV_HOME"] = home
+    return env
+
+
+def _new_session_args(name: str, cwd: Path, command: list[str], env: dict[str, str]) -> list[str]:
+    args = ["new-session", "-d", "-s", name, "-c", str(cwd)]
+    for key in sorted(env):
+        args.extend(["-e", f"{key}={env[key]}"])
+    args.append(shlex.join(command))
+    return args
 
 
 @dataclass(frozen=True)
@@ -100,28 +150,32 @@ def start_session(
     workspace: Workspace,
     *,
     send_initial_goal: bool,
+    run: RunContext | None = None,
+    law_file: Path | None = None,
 ) -> bool:
-    """Start one session and return True, or return False when it already exists."""
+    """Start one session and return True, or return False when it already exists.
+
+    When ``run`` is set the session carries its run env and the worker is
+    launched with the hook spec, so every tool call folds into the run trace and
+    the policy gate fires. ``law_file`` is the composed role law appended to the
+    system prompt (C2, Claude only).
+    """
     name = session_name(project, agent)
     if session_exists(name):
         return False
     provider = project.providers[agent.provider]
     prompt = render_goal(project, agent) if send_initial_goal else None
+    env = _session_env(project, run) if run else {}
+    spec = hook_config(run.run_id, autodev_command()) if run else None
     command = launch_command(
         provider,
         workspace.path,
         bypass_permissions=project.bypass_permissions,
         initial_prompt=prompt,
+        hook_config=spec,
+        law_file=law_file,
     )
-    _tmux(
-        "new-session",
-        "-d",
-        "-s",
-        name,
-        "-c",
-        str(workspace.path),
-        shlex.join(command),
-    )
+    _tmux(*_new_session_args(name, workspace.path, command, env))
 
     paths = project_paths(project.id)
     paths.logs.mkdir(parents=True, exist_ok=True)
