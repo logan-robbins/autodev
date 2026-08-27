@@ -76,3 +76,25 @@ def test_render_goal_for_technical_writer_includes_document_framing(project_repo
     project = load_project(project_repo)
     prompt = render_goal(project, project.agent("backend"), role=_TW)
     assert "data-flow-first" in prompt
+
+
+# --- H2: shared operator law + pod-memory rule -------------------------------
+
+
+def test_compose_law_embeds_the_shared_operator_law() -> None:
+    law = compose_law(_LOOP, _ENG)
+    assert "input -> output -> unit test -> integration test" in law
+    assert "written last" in law
+    assert "red before green" in law
+
+
+def test_compose_law_carries_the_pod_memory_rule() -> None:
+    law = compose_law(_LOOP, _PJM)
+    assert "autodev pod remember" in law
+    assert "read it before acting" in law
+
+
+def test_engineering_law_has_contract_first_and_operator_law() -> None:
+    law = compose_law(_LOOP, _ENG)
+    assert "tests before any internals" in law  # contract-first shape persona
+    assert "One canonical path" in law  # operator law
