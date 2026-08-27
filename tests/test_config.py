@@ -200,6 +200,24 @@ def test_rejects_bad_role_shape(project_repo: Path) -> None:
         load_project(project_repo)
 
 
+# --- D1: the document shape (technical-writer) -------------------------------
+
+
+def test_document_shape_role_loads(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        '\n[roles.technical-writer]\nshape = "document"\ncharter = "Own the pillar docs; run last."\n',
+    )
+    project = load_project(project_repo)
+    assert project.roles["technical-writer"].shape == "document"
+
+
+def test_unknown_shape_still_rejected_after_document_added(project_repo: Path) -> None:
+    _add_tables(project_repo, '\n[roles.designer]\nshape = "documentt"\ncharter = "typo"\n')
+    with pytest.raises(ConfigError, match="roles.designer.shape"):
+        load_project(project_repo)
+
+
 def test_rejects_loop_sequence_entry_without_role(project_repo: Path) -> None:
     _add_tables(
         project_repo,

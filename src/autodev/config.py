@@ -16,7 +16,7 @@ SUPPORTED_PROVIDERS = frozenset({"codex", "claude"})
 DEFAULT_SESSION_PATTERN = "autodev-{project}-{agent}"
 DEFAULT_UI_PORT = 8765
 DEFAULT_MAX_CONCURRENT = 4
-ROLE_SHAPES = frozenset({"research", "contract-first", "reconcile"})
+ROLE_SHAPES = frozenset({"research", "contract-first", "reconcile", "document"})
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
