@@ -54,7 +54,9 @@ def sparse_paths(project: ProjectConfig, agent: AgentConfig, *, kind: str | None
 
     An ``integrate`` pass reads eval signals, not source: its worktree physically
     excludes ``src/impl/**`` (C5), so the boundary is enforced by what is on disk,
-    not by a request the model could ignore.
+    not by a request the model could ignore. Every other kind — including
+    ``document`` (the Technical Writer, which must read ``src/impl/<pillar>`` to
+    write the docs) — keeps the full read set from ``read_roots``.
     """
     patterns = list(
         dict.fromkeys(
