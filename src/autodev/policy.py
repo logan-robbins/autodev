@@ -9,6 +9,7 @@ everything else is allowed.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -16,6 +17,17 @@ _WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 _FACTS_ROOT = "artifacts/facts"
 _IMPL_ROOT = "src/impl"
 _SOURCE_ROOT = "src"
+_PILLARS_ROOT = "product/pillars"
+_PILLAR_DOC_NAMES = frozenset({"README.md", "TECHNICAL.md"})
+
+# Which role may run which typed `autodev product` verb (the verb-authority
+# table). A verb absent here carries no role constraint.
+_VERB_AUTHORITY = {
+    "add-pillars": "product-manager",
+    "add-features": "product-manager",
+    "decompose-feature": "project-manager",
+    "set-leaf-status": "engineering",
+}
 
 
 @dataclass(frozen=True)
@@ -61,13 +73,45 @@ def _allow() -> PolicyDecision:
     return PolicyDecision(allow=True)
 
 
+def _autodev_product_verb(command: str) -> str | None:
+    """The verb of an ``autodev product <verb>`` Bash command, else ``None``."""
+    if not command:
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    for index in range(len(tokens) - 2):
+        if tokens[index].endswith("autodev") and tokens[index + 1] == "product":
+            return tokens[index + 2]
+    return None
+
+
+def _is_pillar_doc(path: str) -> bool:
+    return _contains_segments(path, _PILLARS_ROOT) and PurePosixPath(path.replace("\\", "/")).name in _PILLAR_DOC_NAMES
+
+
 def decide(pi: PolicyInput) -> PolicyDecision:
-    """Return allow/deny for one tool call under the role/kind policy."""
+    """Return allow/deny for one tool call under the role/kind + verb-authority policy."""
+    # Verb authority: only the owning role may run a tree-authoring product verb.
+    if pi.tool_name == "Bash":
+        verb = _autodev_product_verb(str(pi.tool_input.get("command", "")))
+        required = _VERB_AUTHORITY.get(verb) if verb is not None else None
+        if required is not None and pi.role != required:
+            return PolicyDecision(False, f"only {required} may run `autodev product {verb}` (role is {pi.role})")
+        return _allow()
+
     if pi.tool_name not in _WRITE_TOOLS:
         return _allow()
     path = _target_path(pi.tool_input)
     if not path:
         return _allow()
+
+    # Technical Writer owns only the pillar docs; any other write is denied.
+    if pi.role == "technical-writer":
+        if _is_pillar_doc(path):
+            return _allow()
+        return PolicyDecision(False, "technical-writer may only write the pillar docs (README.md/TECHNICAL.md)")
 
     # Project Manager reconciles; it never edits pod source.
     if pi.role == "project-manager":
