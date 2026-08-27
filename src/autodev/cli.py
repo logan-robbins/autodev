@@ -30,9 +30,12 @@ from autodev.pods import pod_agent_id
 from autodev.policy import PolicyInput, decide
 from autodev.product import (
     ProductError,
+    ResetPlan,
     add_features,
     add_pillars,
     decompose_feature,
+    plan_reset,
+    reset_product,
     set_approval,
     set_leaf_status,
     set_pillar_approval,
@@ -352,8 +355,37 @@ def _stdin_json_list(label: str) -> list:
     return payload
 
 
+def _print_reset_plan(plan: ResetPlan, *, applied: bool) -> None:
+    verb = "cleared" if applied else "would clear"
+    print(
+        f"{verb} {len(plan.repo_files)} product file(s), {len(plan.runtime_dirs)} runtime dir(s), "
+        f"{len(plan.pod_worktrees)} pod worktree(s), {len(plan.pod_branches)} pod branch(es)"
+    )
+    for path in plan.repo_files:
+        print(f"  repo      {path}")
+    for path in plan.runtime_dirs:
+        print(f"  runtime   {path}")
+    for path in plan.pod_worktrees:
+        print(f"  worktree  {path}")
+    for branch in plan.pod_branches:
+        print(f"  branch    {branch}")
+    if not applied:
+        print("nothing was deleted; re-run with --yes to apply")
+
+
+def _product_reset(project: ProjectConfig, *, yes: bool) -> int:
+    """`autodev product reset`: destructive, so a bare invocation only previews."""
+    if not yes:
+        _print_reset_plan(plan_reset(project), applied=False)
+        return 1
+    _print_reset_plan(reset_product(project), applied=True)
+    return 0
+
+
 def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
     """Typed tree-authoring verbs (decision #3): schema-validated, atomic writes."""
+    if args.product_command == "reset":
+        return _product_reset(project, yes=args.yes)
     if args.product_command == "add-pillars":
         paths = add_pillars(project, _stdin_json_list("pillars"))
         print(f"wrote {len(paths)} pillar file(s)")
@@ -481,6 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_argument(approval_cmd, required=True)
     approval_cmd.add_argument("--feature", required=True)
     approval_cmd.add_argument("--approval", required=True, choices=["proposed", "approved"])
+    reset_cmd = product_commands.add_parser(
+        "reset", help="clear the product tree and pod runtime state; keep the company"
+    )
+    _add_project_argument(reset_cmd, required=True)
+    reset_cmd.add_argument("--yes", action="store_true", help="confirm the destructive reset (previews without it)")
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
