@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from autodev.config import LoopConfig, RoleConfig, load_project
-from autodev.prompts import compose_law, render_goal
+from autodev.config import AgentConfig, LoopConfig, RoleConfig, load_project
+from autodev.prompts import compose_law, render_goal, render_identity
 
 
 def test_goal_is_generic_but_enforces_project_ownership(project_repo: Path) -> None:
@@ -98,3 +98,72 @@ def test_engineering_law_has_contract_first_and_operator_law() -> None:
     law = compose_law(_LOOP, _ENG)
     assert "tests before any internals" in law  # contract-first shape persona
     assert "One canonical path" in law  # operator law
+
+
+# --- Unit 4a: the fixed per-agent identity block -----------------------------
+
+_ENG_AGENT = AgentConfig(
+    id="eng-replay-engine",
+    provider="claude",
+    purpose="p",
+    goal="g",
+    write_roots=("src/impl/replay-engine/", "tests/replay-engine/"),
+    read_roots=("contracts/", "product/pillars/replay-engine/features/"),
+    pod="replay-engine",
+)
+
+
+def test_render_identity_names_who_and_where() -> None:
+    text = render_identity(
+        agent=_ENG_AGENT,
+        role="engineering",
+        project_id="acme",
+        session_name="autodev-acme-eng-replay-engine",
+        worktree="/state/acme/worktrees/eng-replay-engine",
+        pod_memory_path="/state/acme/pods/replay-engine/memory.jsonl",
+    )
+    assert "eng-replay-engine" in text  # agent id
+    assert "engineering" in text  # role
+    assert "provider: claude" in text  # provider
+    assert "autodev-acme-eng-replay-engine" in text  # session name
+    assert "/state/acme/worktrees/eng-replay-engine" in text  # worktree = only writable checkout
+    assert "src/impl/replay-engine/" in text  # a write root
+    assert "contracts/" in text  # shared contracts pointer
+    assert "/state/acme/pods/replay-engine/memory.jsonl" in text  # pod-memory pointer
+    assert "fixed for this session" in text  # identity is stable
+    assert "re-injected" in text  # notes the charter rides the hook
+
+
+def test_render_identity_is_deterministic() -> None:
+    kwargs = dict(
+        agent=_ENG_AGENT,
+        role="engineering",
+        project_id="acme",
+        session_name="s",
+        worktree="/w",
+        pod_memory_path="/m",
+    )
+    assert render_identity(**kwargs) == render_identity(**kwargs)
+
+
+def test_render_identity_omits_pod_memory_when_product_level() -> None:
+    pm = AgentConfig(
+        id="pm",
+        provider="claude",
+        purpose="p",
+        goal="g",
+        write_roots=(),
+        read_roots=("product/",),
+        pod=None,
+    )
+    text = render_identity(
+        agent=pm,
+        role="product-manager",
+        project_id="acme",
+        session_name="autodev-acme-pm",
+        worktree="/w",
+        pod_memory_path=None,
+    )
+    assert "pod remember" not in text  # no pod-memory line for a product-level agent
+    assert "product-level" in text
+    assert "verb-only" in text  # no write roots -> verb-only note

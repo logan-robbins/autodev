@@ -56,6 +56,17 @@ def test_session_env_exports_provider_when_set(project_repo: Path) -> None:
     assert env["AUTODEV_PROVIDER"] == "claude"
 
 
+def test_session_env_exports_agent_when_set(project_repo: Path) -> None:
+    # Unit 4c: AUTODEV_AGENT lets the charter-digest hook find this agent's identity.
+    project = load_project(project_repo)
+    with_agent = _session_env(
+        project, RunContext(run_id="r", role="engineering", kind="implement", agent="eng-replay-engine")
+    )
+    assert with_agent["AUTODEV_AGENT"] == "eng-replay-engine"
+    without_agent = _session_env(project, RunContext(run_id="r", role="engineering", kind="implement"))
+    assert "AUTODEV_AGENT" not in without_agent
+
+
 def _set_bypass(project_repo: Path, value: bool) -> None:
     descriptor = project_repo / "autodev.toml"
     descriptor.write_text(

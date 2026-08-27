@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from autodev import trace
+from autodev import orchestrator, trace
 from autodev.config import LoopConfig, load_project
 from autodev.orchestrator import ScheduleDecision, tick
 from autodev.product import (
@@ -14,8 +14,9 @@ from autodev.product import (
     set_leaf_status,
     set_pillar_approval,
 )
-from autodev.state import project_paths
+from autodev.state import project_paths, read_identity
 from autodev.trace import new_event, read_events
+from autodev.workspaces import Workspace
 
 _LIMITS = LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=4)
 
@@ -165,6 +166,41 @@ def test_tick_default_launch_is_used_when_none_given(product_tree: Path, tmp_pat
     )
     decisions = tick(project, limits=_LIMITS)
     assert {d.action for d in decisions} <= {"running", "gated"}
+
+
+# --- Unit 4d: _default_launch composes the identity+law brief -----------------
+
+
+def test_default_launch_writes_brief_and_binds_agent(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    captured: dict = {}
+
+    def fake_ensure(_project, _agent, *, kind=None) -> Workspace:
+        return Workspace(path=tmp_path / "wt", branch="autodev/x")
+
+    def fake_start(_project, _agent, _workspace, *, send_initial_goal, run=None, law_file=None) -> bool:
+        captured["run"] = run
+        captured["law_file"] = law_file
+        return True
+
+    monkeypatch.setattr(orchestrator, "ensure_workspace", fake_ensure)
+    monkeypatch.setattr(orchestrator, "start_session", fake_start)
+
+    decision = ScheduleDecision(
+        "feature", "certified-l3-book", "engineering", "book-9", "scheduled", "eng-replay-engine"
+    )
+    orchestrator._default_launch(project, decision)
+
+    # the appended file is the per-agent brief, not a per-role law.
+    assert captured["law_file"] == project_paths(project.id).briefs / "eng-replay-engine.md"
+    brief = captured["law_file"].read_text(encoding="utf-8")
+    # the brief leads with exactly the written identity, then the role law.
+    identity = read_identity(project.id, "eng-replay-engine")
+    assert brief.startswith(identity)
+    assert "Operating law" in brief  # the composed role law follows the identity
+    # the run binds the agent id so the digest hook can re-inject the identity.
+    assert captured["run"].agent == "eng-replay-engine"
 
 
 # --- I1: cold-start step-0 ----------------------------------------------------

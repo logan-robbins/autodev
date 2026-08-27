@@ -45,7 +45,7 @@ from autodev.providers import ProviderError, version
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
-from autodev.state import Registry, autodev_home, project_paths, read_role_law
+from autodev.state import Registry, autodev_home, project_paths, read_identity, read_role_law
 from autodev.trace import emit, event_from_hook, read_events, read_tokens
 from autodev.wizard import run_setup_wizard
 
@@ -248,9 +248,10 @@ def _charter_digest(run_id: str) -> int:
 
     Registered on SessionStart + UserPromptSubmit (A5a) so the durable law is
     re-injected from disk after every compaction and at every pass — the layer
-    that survives regardless of the append-system-prompt outcome (E-1). The
-    pillar's recent pod memory is prepended ahead of the law so "read before
-    acting" is automatic, all within the 10k budget.
+    that survives regardless of the append-system-prompt outcome (E-1). The fixed
+    per-agent identity (by AUTODEV_AGENT) leads, then the pillar's recent pod
+    memory, then the role law, so "who am I / where do I look" and "read before
+    acting" are both automatic, all within the 10k budget.
     """
     raw = sys.stdin.read()
     event_name = "SessionStart"
@@ -267,7 +268,12 @@ def _charter_digest(run_id: str) -> int:
         law = read_role_law(project_id, role)
     except ConfigError:
         return 0
-    context = (_recent_pod_memory(project_id, run_id) + law)[:CHARTER_MAX_CONTEXT]
+    identity = ""
+    agent_id = os.environ.get("AUTODEV_AGENT")
+    if agent_id:
+        with contextlib.suppress(ConfigError):
+            identity = read_identity(project_id, agent_id) + "\n\n"
+    context = (identity + _recent_pod_memory(project_id, run_id) + law)[:CHARTER_MAX_CONTEXT]
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}))
     return 0
 

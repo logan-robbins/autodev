@@ -42,6 +42,7 @@ class RunContext:
     role: str
     kind: str
     provider: str | None = None
+    agent: str | None = None
 
 
 def autodev_command() -> list[str]:
@@ -62,6 +63,8 @@ def _session_env(project: ProjectConfig, run: RunContext) -> dict[str, str]:
     }
     if run.provider:
         env["AUTODEV_PROVIDER"] = run.provider
+    if run.agent:
+        env["AUTODEV_AGENT"] = run.agent
     home = os.environ.get("AUTODEV_HOME")
     if home:
         env["AUTODEV_HOME"] = home
