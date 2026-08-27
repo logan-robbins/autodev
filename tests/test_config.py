@@ -259,6 +259,56 @@ def test_pods_member_bad_provider_rejected(project_repo: Path) -> None:
         load_project(project_repo)
 
 
+# --- D3: [[agents]] or [pods] required; empty write_roots allowed ------------
+
+_BASE_DESCRIPTOR = """schema_version = 3
+
+[project]
+id = "sample-project"
+name = "Sample Project"
+base_branch = "main"
+instructions = "One canonical path."
+context_roots = []
+verify_commands = []
+
+[runtime]
+session_pattern = "autodev-{project}-{agent}"
+ui_port = 8765
+bypass_permissions = false
+"""
+
+
+def _write_descriptor(project_repo: Path, body: str) -> None:
+    (project_repo / "autodev.toml").write_text(body, encoding="utf-8")
+
+
+def test_template_only_descriptor_loads(project_repo: Path) -> None:
+    _write_descriptor(
+        project_repo,
+        _BASE_DESCRIPTOR + _SCHEMA_3_TABLES + '\n[pods]\n[pods.members.engineering]\nprovider = "codex"\n',
+    )
+    project = load_project(project_repo)
+    assert project.agents == ()
+    assert project.pods is not None
+
+
+def test_descriptor_with_neither_agents_nor_pods_rejected(project_repo: Path) -> None:
+    _write_descriptor(project_repo, _BASE_DESCRIPTOR)
+    with pytest.raises(ConfigError, match="must declare at least one \\[\\[agents\\]\\] table or a \\[pods\\]"):
+        load_project(project_repo)
+
+
+def test_verb_only_agent_with_empty_write_roots_loads(project_repo: Path) -> None:
+    _write_descriptor(
+        project_repo,
+        _BASE_DESCRIPTOR
+        + '\n[[agents]]\nid = "pm"\nprovider = "claude"\npurpose = "Author the tree."\n'
+        + 'goal = "Expand pillars."\nwrite_roots = []\nread_roots = ["product/"]\n',
+    )
+    project = load_project(project_repo)
+    assert project.agent("pm").write_roots == ()
+
+
 def test_rejects_loop_sequence_entry_without_role(project_repo: Path) -> None:
     _add_tables(
         project_repo,

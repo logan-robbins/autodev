@@ -370,9 +370,9 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
             effort=_optional_string(raw.get("effort"), f"providers.{provider_name}.effort"),
         )
 
-    raw_agents = data.get("agents")
-    if not isinstance(raw_agents, list) or not raw_agents:
-        raise ConfigError("at least one [[agents]] table is required")
+    raw_agents = data.get("agents", [])
+    if not isinstance(raw_agents, list):
+        raise ConfigError("[[agents]] must be a list of tables")
     agents: list[AgentConfig] = []
     seen_ids: set[str] = set()
     for index, value in enumerate(raw_agents):
@@ -391,7 +391,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
                 provider=provider,
                 purpose=_nonempty_string(raw.get("purpose"), f"agents[{index}].purpose"),
                 goal=_nonempty_string(raw.get("goal"), f"agents[{index}].goal"),
-                write_roots=_roots(raw.get("write_roots"), f"agents[{index}].write_roots", allow_empty=False),
+                write_roots=_roots(raw.get("write_roots", []), f"agents[{index}].write_roots", allow_empty=True),
                 read_roots=_roots(raw.get("read_roots", []), f"agents[{index}].read_roots"),
                 pod=_id(pod, f"agents[{index}].pod") if pod is not None else None,
             )
@@ -405,6 +405,8 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
     roles = _parse_roles(data.get("roles", {}))
     loop = _parse_loop(data["loop"], roles) if "loop" in data else None
     pods = _parse_pods(data["pods"], roles) if "pods" in data else None
+    if not result_agents and pods is None:
+        raise ConfigError("a descriptor must declare at least one [[agents]] table or a [pods] template")
     return ProjectConfig(
         id=project_id,
         name=name,
