@@ -22,6 +22,7 @@ def test_goal_is_generic_but_enforces_project_ownership(project_repo: Path) -> N
 _PM = RoleConfig(id="product-manager", shape="research", charter="Own a Pillar; emit Features.")
 _ENG = RoleConfig(id="engineering", shape="contract-first", charter="Own a Leaf; red tests first.")
 _PJM = RoleConfig(id="project-manager", shape="reconcile", charter="Own a Feature; split into leaves.")
+_TW = RoleConfig(id="technical-writer", shape="document", charter="Own the docs; run last.")
 _LOOP = LoopConfig(
     sequence=("project-manager", "engineering"),
     reenter_product_manager_when=("new-requirement",),
@@ -59,3 +60,19 @@ def test_render_goal_for_engineering_includes_its_charter(project_repo: Path) ->
     assert "Role law:" in prompt
     assert "Own a Leaf; red tests first." in prompt
     assert "contract-first" in prompt
+
+
+# --- H1: the document shape (technical-writer) -------------------------------
+
+
+def test_compose_law_document_shape_is_data_flow_first() -> None:
+    law = compose_law(_LOOP, _TW)
+    assert "data-flow-first" in law
+    assert "a -> b -> c" in law
+    assert "Never edit source" in law
+
+
+def test_render_goal_for_technical_writer_includes_document_framing(project_repo: Path) -> None:
+    project = load_project(project_repo)
+    prompt = render_goal(project, project.agent("backend"), role=_TW)
+    assert "data-flow-first" in prompt

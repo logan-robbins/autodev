@@ -23,6 +23,12 @@ SHAPE_PERSONA = {
         "into complete leaves, correct stale gates, and emit unmet depends_on edges as the next "
         "executable queue."
     ),
+    "document": (
+        "Work as a documentarian, last: read the verified source and the pod memory, then produce a "
+        "highly condensed, data-flow-first technical map — show the flow (a -> b -> c) before any "
+        "prose — stamped to the verified sha. Never edit source; if the source contradicts the "
+        "intent you were asked to document, report it rather than changing it."
+    ),
 }
 
 
