@@ -110,6 +110,23 @@ def test_default_product_json_validates() -> None:
     assert validate_product(data)["vision"] == "build a deterministic replay engine"
 
 
+# --- K5: examples/autodev.toml is the schema-3 company scaffold ---------------
+
+
+def test_examples_autodev_toml_is_the_company_scaffold(project_repo: Path) -> None:
+    # examples/autodev.toml lives one level up from tests/; it is the canonical
+    # schema-3 company scaffold emitted by default_company_descriptor().
+    example = Path(__file__).resolve().parents[1] / "examples" / "autodev.toml"
+    content = example.read_text(encoding="utf-8")
+    assert "schema_version = 3" in content
+    assert content == default_company_descriptor()
+    # a descriptor must load from a git worktree root, so load a copy at one.
+    (project_repo / "autodev.toml").write_text(content, encoding="utf-8")
+    project = load_project(project_repo)
+    assert set(project.roles) == {"product-manager", "project-manager", "engineering", "technical-writer"}
+    assert project.pods is not None and len(project.pods.members) == 4
+
+
 def test_render_without_optional_tables_still_loads(project_repo: Path) -> None:
     (project_repo / "autodev.toml").write_text(
         _render(
