@@ -78,6 +78,55 @@ def test_tick_advances_active_role_when_its_run_is_finished(product_tree: Path, 
     assert changed and changed[-1]["from"] == "engineering" and changed[-1]["to"] == "shipped"
 
 
+def test_tick_failed_run_blocks_and_does_not_advance(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    run_dir = project_paths(project.id).runs / "book-7"
+    trace.emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    trace.emit(run_dir, new_event("run_finished", status="failed"))
+
+    decisions = tick(project, limits=_LIMITS, launch=_no_launch)
+    book = next(d for d in decisions if d.node_id == "certified-l3-book")
+    assert book.action == "blocked"  # a failed pass is blocked, never silently advanced
+
+    feature = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    assert [e["s"] for e in feature["loop"]] == ["done", "done", "blocked"]  # engineering blocked, not done
+    assert not all(e["s"] == "done" for e in feature["loop"])  # the loop is NOT shipped
+    changed = [e for e in read_events(run_dir) if e["type"] == "phase_changed"]
+    assert any(e["reason"] == "failed" and e["to"] == "blocked" for e in changed)
+
+
+def test_tick_blocked_feature_not_reported_shipped(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    run_dir = project_paths(project.id).runs / "book-7"
+    trace.emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    trace.emit(run_dir, new_event("run_finished", status="failed"))
+
+    tick(project, limits=_LIMITS, launch=_no_launch)  # first tick blocks the feature
+    decisions = tick(load_project(product_tree), limits=_LIMITS, launch=_no_launch)  # second tick
+    book = next(d for d in decisions if d.node_id == "certified-l3-book")
+    assert book.action == "blocked"  # a just-blocked feature stays blocked, never mislabeled shipped
+
+
 def test_tick_respects_max_concurrent(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     project = load_project(product_tree)
