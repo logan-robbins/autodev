@@ -44,7 +44,7 @@ class ScheduleDecision:
     node_id: str
     role: str
     run_id: str
-    action: str  # scheduled | advanced | gated | at-capacity | running | shipped
+    action: str  # scheduled | advanced | gated | at-capacity | running | shipped | blocked
     agent: str | None = None
 
 
@@ -90,6 +90,13 @@ def _active_role(feature: dict) -> str | None:
 def _frontier_role(feature: dict) -> str | None:
     for entry in feature["loop"]:
         if entry["s"] == "pending":
+            return entry["role"]
+    return None
+
+
+def _blocked_role(feature: dict) -> str | None:
+    for entry in feature["loop"]:
+        if entry["s"] == "blocked":
             return entry["role"]
     return None
 
@@ -198,7 +205,8 @@ def _drive_feature(
     if active is not None:
         view = product.join_run(project, feature)
         run_id = view.run.run_id if view.run else ""
-        if view.run is not None and view.run.status in {"done", "failed"}:
+        status = view.run.status if view.run is not None else None
+        if status == "done":
             product.set_loop_state(project, feature_id, active, "done")
             nxt = _next_after(feature, active)
             trace.emit(
@@ -211,6 +219,19 @@ def _drive_feature(
                 ),
             )
             decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "advanced"))
+        elif status == "failed":
+            # A failed pass is visibly blocked, never silently advanced or shipped.
+            product.set_loop_state(project, feature_id, active, "blocked")
+            trace.emit(
+                _run_dir(project, run_id),
+                trace.new_event(
+                    "phase_changed",
+                    node_ref=node_ref,
+                    reason="failed",
+                    **{"from": active, "to": "blocked"},
+                ),
+            )
+            decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "blocked"))
         else:
             decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "running"))
         return decisions, running
@@ -221,7 +242,13 @@ def _drive_feature(
 
     frontier = _frontier_role(feature)
     if frontier is None:
-        decisions.append(ScheduleDecision("feature", feature_id, "", "", "shipped"))
+        # No active or pending role: only an all-done loop is shipped; a blocked
+        # entry keeps the feature visibly blocked so it is never mislabeled shipped.
+        blocked = _blocked_role(feature)
+        if blocked is not None:
+            decisions.append(ScheduleDecision("feature", feature_id, blocked, "", "blocked"))
+        else:
+            decisions.append(ScheduleDecision("feature", feature_id, "", "", "shipped"))
         return decisions, running
     if running >= limits.max_concurrent:
         decisions.append(ScheduleDecision("feature", feature_id, frontier, "", "at-capacity"))
