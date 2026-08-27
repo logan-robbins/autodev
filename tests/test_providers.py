@@ -108,6 +108,26 @@ def test_claude_appends_the_law_file(monkeypatch, tmp_path: Path) -> None:
     assert command == ["/bin/claude", "--append-system-prompt-file", str(law)]
 
 
+def test_shipped_default_fires_skip_permissions(project_repo: Path, monkeypatch) -> None:
+    # Unit 2: under the shipped default (bypass_permissions=true from Unit 1), a
+    # Claude worker's launch command always carries --dangerously-skip-permissions.
+    from autodev.config import load_project
+    from autodev.templates import default_company_descriptor
+
+    (project_repo / "autodev.toml").write_text(default_company_descriptor(), encoding="utf-8")
+    project = load_project(project_repo)
+    assert project.bypass_permissions is True  # Unit 1's default is wired through
+
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/claude")
+    command = launch_command(
+        project.providers["claude"],
+        project_repo,
+        bypass_permissions=project.bypass_permissions,
+        initial_prompt=None,
+    )
+    assert "--dangerously-skip-permissions" in command
+
+
 def test_codex_does_not_clobber_instructions_with_law(monkeypatch, tmp_path: Path) -> None:
     # Codex 0.147.0 has no safe append flag, so law_file must NOT add one.
     monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/codex")

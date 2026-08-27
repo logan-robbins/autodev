@@ -93,6 +93,54 @@ def compose_law(loop: LoopConfig | None, role: RoleConfig) -> str:
     return "\n".join(parts)
 
 
+def render_identity(
+    *,
+    agent: AgentConfig,
+    role: str,
+    project_id: str,
+    session_name: str,
+    worktree: str,
+    pod_memory_path: str | None,
+) -> str:
+    """The fixed per-agent identity block, prepended above the durable charter.
+
+    Pure and deterministic given its arguments (the caller passes the already-
+    computed worktree, session name, and pod-memory path as strings, so this
+    module adds no dependencies). It answers *who am I and where do I look* — the
+    part that must not drift as the role charter is re-injected. When the agent
+    is product-level (no pillar/pod) the pod-memory pointer is omitted.
+    """
+    write_lines = (
+        "\n".join(f"  - {root}" for root in agent.write_roots)
+        if agent.write_roots
+        else "  - (verb-only: you own no write roots; act only through the `autodev product` verbs)"
+    )
+    read_lines = "\n".join(f"  - {root}" for root in agent.read_roots) or "  - (none)"
+    lines = [
+        f"You are `{agent.id}`, the {role} for project `{project_id}` (provider: {agent.provider}).",
+        f"Pod / pillar: {agent.pod or 'product-level (no pillar)'}. tmux session: {session_name}.",
+        "This identity is fixed for this session; it never changes mid-run.",
+        "Your role charter (the operating law below) is appended beneath this identity and "
+        "re-injected after every compaction via the session hook — always act on it.",
+        "",
+        "Where to look:",
+        f"- Worktree (the ONLY writable checkout — make every change here): {worktree}",
+        "- Your owned write roots (edit ONLY within these):",
+        write_lines,
+        "- Read-only context (understand and verify, never edit):",
+        read_lines,
+        "- Feature and leaf intent lives under product/pillars/<pillar>/features/; read it, but "
+        "mutate the tree only through the `autodev product` verbs.",
+        "- Shared interface contracts live under contracts/.",
+    ]
+    if pod_memory_path is not None:
+        lines.append(
+            f"- Your pod's shared memory: {pod_memory_path} — read it before acting, and record "
+            "durable facts, decisions, and handoffs with `autodev pod remember`."
+        )
+    return "\n".join(lines)
+
+
 def render_goal(project: ProjectConfig, agent: AgentConfig, role: RoleConfig | None = None) -> str:
     verification = _list(project.verify_commands, empty="use the repository's relevant local checks")
     base = f"""You are the `{agent.id}` Autodev agent for {project.name}.

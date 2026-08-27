@@ -5,10 +5,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from autodev.cli import build_parser, main
+from autodev.cli import CHARTER_MAX_CONTEXT, build_parser, main
 from autodev.config import load_project
 from autodev.podmemory import read_pod_memory
-from autodev.state import Registry, project_paths, write_role_law
+from autodev.state import Registry, project_paths, write_identity, write_role_law
 from autodev.trace import emit, new_event, read_events
 from autodev.wizard import WizardResult
 
@@ -144,6 +144,57 @@ def test_charter_digest_prepends_recent_pod_memory(tmp_path: Path, monkeypatch, 
     assert "store leaf is ready for engineering" in context
     # the memory line comes ahead of the role law.
     assert context.index("store leaf is ready") < context.index("CHARTER: red tests")
+
+
+def test_charter_digest_leads_with_the_agent_identity(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Unit 4e: with AUTODEV_AGENT + a written identity, additionalContext leads with
+    # the fixed identity, ahead of the pod memory and the role law.
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    monkeypatch.setenv("AUTODEV_AGENT", "eng-replay-engine")
+    write_identity("sample-project", "eng-replay-engine", "IDENTITY-MARK: you are eng-replay-engine.", home=state)
+    write_role_law("sample-project", "engineering", "LAW-MARK: red tests before internals.", home=state)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "UserPromptSubmit"})))
+
+    assert main(["charter", "digest", "--run", "book-7"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("IDENTITY-MARK")  # identity leads
+    assert context.index("IDENTITY-MARK") < context.index("LAW-MARK")  # identity ahead of law
+
+
+def test_charter_digest_without_identity_falls_back_to_law(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Unit 4e: a set AUTODEV_AGENT but no identity file on disk must not crash; the
+    # digest simply omits the identity and still emits the role law.
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    monkeypatch.setenv("AUTODEV_AGENT", "eng-missing")  # no identity written for this agent
+    write_role_law("sample-project", "engineering", "LAW-MARK: own a leaf.", home=state)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart"})))
+
+    assert main(["charter", "digest", "--run", "r"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("LAW-MARK")  # no identity -> law leads, no crash
+
+
+def test_charter_digest_honors_the_10k_cap_with_identity(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Unit 4e: identity + law together are still clamped to the existing 10k budget.
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    monkeypatch.setenv("AUTODEV_AGENT", "eng-big")
+    write_identity("sample-project", "eng-big", "I" + "x" * 8000, home=state)
+    write_role_law("sample-project", "engineering", "L" + "y" * 8000, home=state)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart"})))
+
+    assert main(["charter", "digest", "--run", "r"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert len(context) == CHARTER_MAX_CONTEXT  # clamped
+    assert context.startswith("Ix")  # identity still leads within the budget
 
 
 def test_charter_digest_without_role_env_is_silent(tmp_path: Path, monkeypatch, capsys) -> None:

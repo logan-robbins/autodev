@@ -24,9 +24,9 @@ from dataclasses import dataclass
 
 from autodev import pods, product, trace
 from autodev.config import ConfigError, LoopConfig, ProjectConfig
-from autodev.prompts import compose_law
-from autodev.sessions import RunContext, start_session
-from autodev.state import project_paths, write_role_law
+from autodev.prompts import compose_law, render_identity
+from autodev.sessions import RunContext, session_name, start_session
+from autodev.state import pod_memory_path, project_paths, write_brief, write_identity, write_role_law
 from autodev.workspaces import ensure_workspace
 
 # role -> the step kind its pass declares (feeds AUTODEV_KIND / policy).
@@ -136,16 +136,38 @@ def _materialized_agent(project: ProjectConfig, agent_id: str):
 
 
 def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
-    """Start one role-instance session with its run env, hooks, and durable law."""
+    """Start one role-instance session with its run env, hooks, and durable brief.
+
+    The launch brief is the fixed per-agent identity (who/where) composed with the
+    per-role charter law, written to ``briefs/<agent>.md`` and appended via the
+    single ``--append-system-prompt-file`` Claude accepts. The per-role law is also
+    written to ``laws/<role>.md`` and the identity to ``identities/<agent>.md`` so
+    the ``charter digest`` hook can re-inject both from disk after every compaction.
+    """
     if decision.agent is None:
         return
     agent = _materialized_agent(project, decision.agent)
     kind = _ROLE_KIND.get(decision.role)
     workspace = ensure_workspace(project, agent, kind=kind)
-    law_file = None
+
+    memory_path = str(pod_memory_path(project.id, agent.pod)) if agent.pod else None
+    identity = render_identity(
+        agent=agent,
+        role=decision.role,
+        project_id=project.id,
+        session_name=session_name(project, agent),
+        worktree=str(workspace.path),
+        pod_memory_path=memory_path,
+    )
+    write_identity(project.id, agent.id, identity)
+
     role_config = project.roles.get(decision.role)
+    law = compose_law(project.loop, role_config) if role_config is not None else ""
     if role_config is not None:
-        law_file = write_role_law(project.id, decision.role, compose_law(project.loop, role_config))
+        write_role_law(project.id, decision.role, law)  # digest law source, unchanged
+    brief = identity + (f"\n\n{law}" if law else "")
+    law_file = write_brief(project.id, agent.id, brief)
+
     start_session(
         project,
         agent,
@@ -156,6 +178,7 @@ def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
             role=decision.role,
             kind=kind or "tool",
             provider=agent.provider,
+            agent=agent.id,
         ),
         law_file=law_file,
     )

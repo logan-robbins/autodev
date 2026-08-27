@@ -96,9 +96,21 @@ def test_default_company_descriptor_loads_as_schema_3(project_repo: Path) -> Non
     assert set(project.roles) == {"product-manager", "project-manager", "engineering", "technical-writer"}
     assert project.pods is not None
     assert set(project.pods.members) == {"product-manager", "project-manager", "engineering", "technical-writer"}
-    assert project.pods.members["engineering"].provider == "codex"
+    assert project.pods.members["engineering"].provider == "claude"
     assert project.loop is not None
     assert project.loop.sequence == ("project-manager", "engineering", "project-manager")
+
+
+def test_default_company_descriptor_defaults_to_claude_and_bypass_on(project_repo: Path) -> None:
+    # Unit 1: the shipped scaffold defaults every pod member to Claude (no codex)
+    # and turns bypass_permissions on, so a worker fires --dangerously-skip-permissions.
+    descriptor = default_company_descriptor()
+    assert "codex" not in descriptor
+    assert "bypass_permissions = true" in descriptor
+    (project_repo / "autodev.toml").write_text(descriptor, encoding="utf-8")
+    project = load_project(project_repo)
+    assert project.bypass_permissions is True
+    assert {member.provider for member in project.pods.members.values()} == {"claude"}
 
 
 def test_default_product_json_validates() -> None:

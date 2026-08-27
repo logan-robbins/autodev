@@ -32,6 +32,8 @@ class ProjectPaths:
     runs: Path
     laws: Path
     pods: Path
+    identities: Path
+    briefs: Path
 
 
 def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
@@ -43,6 +45,8 @@ def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
         runs=root / "runs",
         laws=root / "laws",
         pods=root / "pods",
+        identities=root / "identities",
+        briefs=root / "briefs",
     )
 
 
@@ -75,6 +79,44 @@ def read_role_law(project_id: str, role: str, *, home: Path | None = None) -> st
     if not path.exists():
         raise ConfigError(f"no composed law for role {role!r} at {path}")
     return path.read_text(encoding="utf-8")
+
+
+def identity_path(project_id: str, agent: str, *, home: Path | None = None) -> Path:
+    return project_paths(project_id, home=home).identities / f"{agent}.md"
+
+
+def write_identity(project_id: str, agent: str, content: str, *, home: Path | None = None) -> Path:
+    """Persist one agent's fixed identity block under AUTODEV_HOME (0600).
+
+    Per-agent (not per-role): the identity names this specific agent id, so the
+    ``charter digest`` hook can re-inject it by ``AUTODEV_AGENT``. Kept out of the
+    managed repo for the same reason as the composed law.
+    """
+    path = identity_path(project_id, agent, home=home)
+    atomic_write_text(path, content, mode=0o600)
+    return path
+
+
+def read_identity(project_id: str, agent: str, *, home: Path | None = None) -> str:
+    path = identity_path(project_id, agent, home=home)
+    if not path.exists():
+        raise ConfigError(f"no identity for agent {agent!r} at {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def brief_path(project_id: str, agent: str, *, home: Path | None = None) -> Path:
+    return project_paths(project_id, home=home).briefs / f"{agent}.md"
+
+
+def write_brief(project_id: str, agent: str, content: str, *, home: Path | None = None) -> Path:
+    """Persist one agent's composed launch brief (identity + law) under AUTODEV_HOME (0600).
+
+    Claude accepts a single append-system-prompt source, so identity and law are
+    composed into one per-agent brief and passed via ``--append-system-prompt-file``.
+    """
+    path = brief_path(project_id, agent, home=home)
+    atomic_write_text(path, content, mode=0o600)
+    return path
 
 
 def atomic_write_text(path: Path, content: str, *, mode: int | None = None) -> None:
