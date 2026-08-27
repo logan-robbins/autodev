@@ -69,14 +69,32 @@ def _write_json(path: Path, payload: dict) -> None:
 def product_tree(project_repo: Path) -> Path:
     """Seed a durable product tree under ``project_repo`` (intent only, no runs).
 
-    One pillar ``replay-engine`` with two features:
+    A ``product/product.json`` vision seed and one **approved** pillar
+    ``replay-engine`` (``pillar.json``) with two features:
 
     - ``certified-l3-book`` — approved, engineering active, two leaves whose
       ``store`` depends on an as-yet-unverified ``bucket`` (an unmet edge).
     - ``fast-ingest`` — proposed (the orchestrator must not schedule downstream
       roles on it), no leaves yet.
     """
-    features = project_repo / "product" / "pillars" / "replay-engine" / "features"
+    _write_json(
+        project_repo / "product" / "product.json",
+        {"vision": "Deterministic replay for market data.", "constraints": ["uv for Python"]},
+    )
+    pillars = project_repo / "product" / "pillars"
+    _write_json(
+        pillars / "replay-engine" / "pillar.json",
+        {
+            "id": "replay-engine",
+            "name": "Replay Engine",
+            "why": "Operators cannot reproduce a trading session deterministically.",
+            "value": "Byte-exact replay of any historical session.",
+            "goal": "A session replays to the same state every time.",
+            "approval": "approved",
+            "docs": "pending",
+        },
+    )
+    features = pillars / "replay-engine" / "features"
     book = features / "certified-l3-book"
     _write_json(
         book / "feature.json",

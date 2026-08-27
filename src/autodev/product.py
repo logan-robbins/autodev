@@ -16,6 +16,7 @@ here so the schema is validated at the boundary, the way ``config.py`` validates
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
@@ -26,6 +27,8 @@ from autodev.config import _ID_RE, ProjectConfig
 from autodev.state import atomic_write_text, project_paths
 
 PRODUCT_ROOT = ("product", "pillars")
+# The cold-start vision seed sits beside the pillars directory.
+PRODUCT_JSON = ("product", "product.json")
 
 # The three standard roles; loop[].role must be one of the configured roles, and
 # these are the fallback when a descriptor declares none (pre-schema-3).
@@ -34,6 +37,16 @@ DEFAULT_ROLES = ("product-manager", "project-manager", "engineering")
 APPROVALS = frozenset({"proposed", "approved"})
 LOOP_STATES = frozenset({"pending", "active", "done", "blocked"})
 LEAF_STATUSES = frozenset({"pending", "in_progress", "verified", "blocked"})
+PILLAR_DOCS = frozenset({"pending", "active", "done"})
+
+# A pillar id is capped at 28 chars so a stamped pod id (``pjm-<pillar>`` /
+# ``eng-<pillar>``, a 4-char prefix) still fits the shared _ID_RE 32-char limit.
+_PILLAR_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,27}$")
+
+_PILLAR_KEYS = frozenset({"id", "name", "why", "value", "goal", "approval", "docs"})
+_PILLAR_REQUIRED = frozenset({"id", "name", "why", "value", "goal", "approval"})
+_PRODUCT_KEYS = frozenset({"vision", "constraints"})
+_PRODUCT_REQUIRED = frozenset({"vision"})
 
 _FEATURE_KEYS = frozenset({"id", "pillar", "name", "approval", "loop", "run_ref", "leaves"})
 _FEATURE_REQUIRED = frozenset({"id", "pillar", "name", "approval", "loop", "leaves"})
@@ -66,6 +79,12 @@ def _require(obj: Mapping[str, Any], required: Collection[str], label: str) -> N
 def _identifier(value: Any, label: str) -> str:
     if not isinstance(value, str) or not _ID_RE.fullmatch(value):
         raise ProductError(f"{label} must match {_ID_RE.pattern!r}; got {value!r}")
+    return value
+
+
+def _pillar_identifier(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not _PILLAR_ID_RE.fullmatch(value):
+        raise ProductError(f"{label} must match {_PILLAR_ID_RE.pattern!r}; got {value!r}")
     return value
 
 
@@ -186,6 +205,62 @@ def validate_leaf(obj: Mapping[str, Any]) -> dict[str, Any]:
         "depends_on": depends_on,
         "run_ref": run_ref,
     }
+
+
+def validate_pillar(obj: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a normalised pillar dict or raise ``ProductError`` (fail-fast).
+
+    ``pillar.json`` is the PM-owned artifact and the operator gate (contract
+    C-P1): ``why``/``value``/``goal`` describe the area, ``approval`` is the
+    human gate, and ``docs`` is the docs-last checkpoint. ``docs`` is optional
+    and defaults to ``pending``.
+    """
+    pillar = _mapping(obj, "pillar")
+    _reject_unknown(pillar, _PILLAR_KEYS, "pillar")
+    _require(pillar, _PILLAR_REQUIRED, "pillar")
+    return {
+        "id": _pillar_identifier(pillar["id"], "pillar.id"),
+        "name": _nonempty(pillar["name"], "pillar.name"),
+        "why": _nonempty(pillar["why"], "pillar.why"),
+        "value": _nonempty(pillar["value"], "pillar.value"),
+        "goal": _nonempty(pillar["goal"], "pillar.goal"),
+        "approval": _enum(pillar["approval"], APPROVALS, "pillar.approval"),
+        "docs": _enum(pillar.get("docs", "pending"), PILLAR_DOCS, "pillar.docs"),
+    }
+
+
+def validate_product(obj: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a normalised product-vision dict or raise ``ProductError``.
+
+    ``product/product.json`` (contract C-P2) is the cold-start seed the Product
+    Manager reads to bootstrap the first pillars. It is operator-authored and
+    read-only intent thereafter — no agent rewrites it.
+    """
+    data = _mapping(obj, "product")
+    _reject_unknown(data, _PRODUCT_KEYS, "product")
+    _require(data, _PRODUCT_REQUIRED, "product")
+    vision = _nonempty(data["vision"], "product.vision")
+    raw = data.get("constraints", [])
+    if not isinstance(raw, (list, tuple)):
+        raise ProductError("product.constraints must be a list of strings")
+    constraints = [_nonempty(item, f"product.constraints[{index}]") for index, item in enumerate(raw)]
+    return {"vision": vision, "constraints": constraints}
+
+
+def product_json_path(project: ProjectConfig) -> Path:
+    return project.root.joinpath(*PRODUCT_JSON)
+
+
+def load_product_vision(project: ProjectConfig) -> dict[str, Any] | None:
+    """Load and validate ``product/product.json``, or ``None`` when it is absent.
+
+    Absence is a valid state (nothing to bootstrap yet); a present-but-malformed
+    seed fails fast so a typo cannot silently disable cold-start.
+    """
+    path = product_json_path(project)
+    if not path.is_file():
+        return None
+    return validate_product(json.loads(path.read_text(encoding="utf-8")))
 
 
 # --- A1: enumeration ----------------------------------------------------------

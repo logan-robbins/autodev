@@ -15,12 +15,16 @@ from autodev.product import (
     enumerate_tree,
     join_run,
     load_leaf,
+    load_product_vision,
+    product_json_path,
     set_approval,
     set_leaf_status,
     set_loop_state,
     set_run_ref,
     validate_feature,
     validate_leaf,
+    validate_pillar,
+    validate_product,
 )
 from autodev.state import project_paths
 from autodev.trace import new_event
@@ -139,6 +143,102 @@ def test_validate_leaf_rejects_self_dependency() -> None:
 def test_validate_leaf_rejects_unknown_key() -> None:
     with pytest.raises(ProductError, match="unknown field"):
         validate_leaf(_leaf(priority="high"))
+
+
+# --- D0: pillar.json schema --------------------------------------------------
+
+
+def _pillar(**overrides) -> dict:
+    base = {
+        "id": "replay-engine",
+        "name": "Replay Engine",
+        "why": "the problem",
+        "value": "the value",
+        "goal": "the outcome",
+        "approval": "proposed",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_validate_pillar_normalises_valid_and_defaults_docs() -> None:
+    result = validate_pillar(_pillar())
+    assert result["id"] == "replay-engine"
+    assert result["approval"] == "proposed"
+    assert result["docs"] == "pending"  # optional, defaults pending
+
+
+def test_validate_pillar_rejects_unknown_key() -> None:
+    with pytest.raises(ProductError, match="unknown field"):
+        validate_pillar(_pillar(owner="pm"))
+
+
+def test_validate_pillar_rejects_bad_approval() -> None:
+    with pytest.raises(ProductError, match="pillar.approval"):
+        validate_pillar(_pillar(approval="maybe"))
+
+
+def test_validate_pillar_rejects_bad_docs() -> None:
+    with pytest.raises(ProductError, match="pillar.docs"):
+        validate_pillar(_pillar(docs="written"))
+
+
+def test_validate_pillar_rejects_missing_required() -> None:
+    payload = _pillar()
+    del payload["goal"]
+    with pytest.raises(ProductError, match="missing field"):
+        validate_pillar(payload)
+
+
+def test_validate_pillar_rejects_id_over_28_chars() -> None:
+    # 29 chars — one over the cap that keeps stamped pod ids within _ID_RE's 32.
+    with pytest.raises(ProductError, match="pillar.id"):
+        validate_pillar(_pillar(id="a" + "b" * 28))
+
+
+def test_validate_pillar_accepts_id_at_28_chars() -> None:
+    assert validate_pillar(_pillar(id="a" + "b" * 27))["id"] == "a" + "b" * 27
+
+
+def test_seeded_pillar_json_validates(product_tree: Path) -> None:
+    path = product_tree / "product" / "pillars" / "replay-engine" / "pillar.json"
+    pillar = validate_pillar(json.loads(path.read_text(encoding="utf-8")))
+    assert pillar["id"] == "replay-engine"
+    assert pillar["approval"] == "approved"
+
+
+# --- D0b: product.json vision seed -------------------------------------------
+
+
+def test_validate_product_normalises_valid() -> None:
+    result = validate_product({"vision": "build X for Y", "constraints": ["stdlib only"]})
+    assert result == {"vision": "build X for Y", "constraints": ["stdlib only"]}
+
+
+def test_validate_product_defaults_constraints_to_empty() -> None:
+    assert validate_product({"vision": "build X"})["constraints"] == []
+
+
+def test_validate_product_rejects_missing_vision() -> None:
+    with pytest.raises(ProductError, match="missing field"):
+        validate_product({"constraints": []})
+
+
+def test_validate_product_rejects_unknown_key() -> None:
+    with pytest.raises(ProductError, match="unknown field"):
+        validate_product({"vision": "x", "roadmap": []})
+
+
+def test_load_product_vision_reads_the_seed(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    vision = load_product_vision(project)
+    assert vision is not None
+    assert vision["vision"].startswith("Deterministic replay")
+    assert product_json_path(project).is_file()
+
+
+def test_load_product_vision_is_none_when_absent(project_repo: Path) -> None:
+    assert load_product_vision(load_project(project_repo)) is None
 
 
 def test_seeded_product_tree_validates_end_to_end(product_tree: Path) -> None:
