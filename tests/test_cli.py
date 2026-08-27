@@ -292,6 +292,19 @@ def test_pod_remember_requires_session_env(tmp_path: Path, monkeypatch, capsys) 
     assert "AUTODEV_PROJECT" in capsys.readouterr().err
 
 
+def test_orchestrate_runs_one_tick_and_schedules_pm(bootstrap_repo: Path, tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    launched: list[object] = []
+    # a fake launcher so the tick schedules without touching tmux/providers.
+    monkeypatch.setattr("autodev.orchestrator._default_launch", lambda _p, d: launched.append(d))
+
+    assert main(["orchestrate", str(bootstrap_repo)]) == 0
+
+    out = capsys.readouterr().out
+    assert "product" in out and "product-manager" in out and "scheduled" in out and "pm" in out
+    assert [d.agent for d in launched] == ["pm"]
+
+
 def test_setup_command_accepts_optional_project_path() -> None:
     args = build_parser().parse_args(["setup", "/tmp/example"])
 

@@ -9,18 +9,22 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from autodev import __version__
 from autodev.config import (
+    DEFAULT_MAX_CONCURRENT,
     DESCRIPTOR_NAME,
     ConfigError,
+    LoopConfig,
     ProjectConfig,
     load_project,
 )
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.orchestrator import tick
 from autodev.podmemory import append_pod_memory, read_pod_memory
 from autodev.pods import pod_agent_id
 from autodev.policy import PolicyInput, decide
@@ -43,6 +47,7 @@ from autodev.wizard import run_setup_wizard
 CHARTER_MAX_CONTEXT = 10_000
 POLICY_BLOCK_EXIT = 2
 CHARTER_MEMORY_ENTRIES = 20
+ORCHESTRATE_WATCH_INTERVAL = 5.0
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -364,6 +369,38 @@ def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def _orchestrate_limits(project: ProjectConfig) -> LoopConfig:
+    if project.loop is not None:
+        return project.loop
+    return LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=DEFAULT_MAX_CONCURRENT)
+
+
+def _orchestrate(project: ProjectConfig, *, watch: bool) -> int:
+    """Advance the product tree one tick (or repeatedly with --watch)."""
+    limits = _orchestrate_limits(project)
+
+    def once() -> None:
+        decisions = tick(project, limits=limits)
+        if not decisions:
+            print("no scheduling decisions")
+            return
+        for decision in decisions:
+            print(
+                f"{decision.level:8} {decision.node_id:24} {decision.role:16} "
+                f"{decision.action:12} {decision.agent or '-'}"
+            )
+
+    if watch:
+        try:
+            while True:
+                once()
+                time.sleep(ORCHESTRATE_WATCH_INTERVAL)
+        except KeyboardInterrupt:
+            return 0
+    once()
+    return 0
+
+
 def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "project",
@@ -481,6 +518,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui = subparsers.add_parser("ui", help="run one project's configuration and agent UI")
     _add_project_argument(ui, required=True)
+
+    orchestrate = subparsers.add_parser("orchestrate", help="advance the product tree one scheduling tick")
+    _add_project_argument(orchestrate, required=True)
+    orchestrate.add_argument("--watch", action="store_true", help="keep ticking on an interval")
     return parser
 
 
@@ -556,6 +597,8 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
     if args.command == "ui":
         serve_project(project)
         return 0
+    if args.command == "orchestrate":
+        return _orchestrate(project, watch=args.watch)
     if args.command == "validate":
         _validate_base(project)
         summary = _project_summary(project)
