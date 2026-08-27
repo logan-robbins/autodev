@@ -10,6 +10,7 @@ from autodev.config import load_project
 from autodev.product import (
     ProductError,
     add_features,
+    add_pillars,
     decompose_feature,
     derive_phase,
     enumerate_tree,
@@ -380,6 +381,47 @@ def test_join_run_embeds_live_run_and_unmet_edges(product_tree: Path, tmp_path: 
     import json as _json
 
     _json.dumps(view.as_dict())
+
+
+# --- E1: add_pillars ---------------------------------------------------------
+
+
+def test_add_pillars_writes_valid_pillar_json(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    paths = add_pillars(
+        project,
+        [
+            {
+                "id": "fast-lane",
+                "name": "Fast Lane",
+                "why": "ingest is too slow",
+                "value": "sub-second ingest",
+                "goal": "p99 ingest under 1s",
+                "approval": "proposed",
+            }
+        ],
+    )
+    assert paths[0].is_file()
+    written = validate_pillar(json.loads(paths[0].read_text(encoding="utf-8")))
+    assert written["id"] == "fast-lane"
+    assert written["approval"] == "proposed"
+    assert written["docs"] == "pending"
+
+
+def test_add_pillars_writes_nothing_on_invalid_payload(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    good = {
+        "id": "good-pillar",
+        "name": "Good",
+        "why": "w",
+        "value": "v",
+        "goal": "g",
+        "approval": "proposed",
+    }
+    bad = {**good, "id": "bad-pillar", "approval": "maybe"}
+    with pytest.raises(ProductError):
+        add_pillars(project, [good, bad])
+    assert not (product_tree / "product" / "pillars" / "good-pillar").exists()
 
 
 # --- B4: typed state-mutation actions ----------------------------------------

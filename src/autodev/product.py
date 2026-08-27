@@ -433,6 +433,22 @@ def _leaf_ref(leaf_id: str) -> str:
     return f"leaves/{leaf_id}/leaf.json"
 
 
+def add_pillars(project: ProjectConfig, pillars: Sequence[Mapping[str, Any]]) -> list[Path]:
+    """Create one ``pillar.json`` per spec (validate all, then write atomically).
+
+    A bad payload anywhere in the batch raises before any file is written, so an
+    invalid id (>28 chars) or missing field never leaves a half-written tree.
+    """
+    validated = [validate_pillar(spec) for spec in pillars]
+    root = product_root(project)
+    paths = []
+    for pillar in validated:
+        path = root / pillar["id"] / "pillar.json"
+        _write_json(path, pillar)
+        paths.append(path)
+    return paths
+
+
 def add_features(project: ProjectConfig, pillar: str, features: Sequence[Mapping[str, Any]]) -> list[Path]:
     """Create one feature.json per spec under ``pillar`` (validate all, then write)."""
     pillar = _identifier(pillar, "pillar")
