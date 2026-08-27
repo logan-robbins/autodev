@@ -187,7 +187,7 @@ _COMPANY_PODS = DescriptorPods(
     members=(
         DescriptorPodMember(role="product-manager", provider="claude"),
         DescriptorPodMember(role="project-manager", provider="claude"),
-        DescriptorPodMember(role="engineering", provider="codex"),
+        DescriptorPodMember(role="engineering", provider="claude"),
         DescriptorPodMember(role="technical-writer", provider="claude"),
     )
 )
@@ -207,7 +207,7 @@ def default_company_descriptor(*, project_id: str = "acme", name: str = "Acme") 
         verify_commands=("uv run pytest",),
         session_pattern="autodev-{project}-{agent}",
         ui_port=8765,
-        bypass_permissions=False,
+        bypass_permissions=True,
         agents=(),
         loop=DescriptorLoop(
             sequence=("project-manager", "engineering", "project-manager"),
