@@ -68,6 +68,18 @@ def _session_env(project: ProjectConfig, run: RunContext) -> dict[str, str]:
     return env
 
 
+def _sandbox_env(project: ProjectConfig) -> dict[str, str]:
+    """``IS_SANDBOX=1`` for a bypass worker, else ``{}``.
+
+    A Claude worker launched with ``--dangerously-skip-permissions`` (bypass) trips
+    Claude's root sandbox gate — ``getuid()==0 && IS_SANDBOX!="1" -> exit(1)`` —
+    unless ``IS_SANDBOX`` is exactly ``"1"``. Delivered through tmux ``-e`` so it
+    reaches the process without a shell ``export`` prefix that would change
+    ``#{pane_current_command}`` and break pane-command detection.
+    """
+    return {"IS_SANDBOX": "1"} if project.bypass_permissions else {}
+
+
 def _new_session_args(name: str, cwd: Path, command: list[str], env: dict[str, str]) -> list[str]:
     args = ["new-session", "-d", "-s", name, "-c", str(cwd)]
     for key in sorted(env):
@@ -165,7 +177,7 @@ def start_session(
         return False
     provider = project.providers[agent.provider]
     prompt = render_goal(project, agent) if send_initial_goal else None
-    env = _session_env(project, run) if run else {}
+    env = {**(_session_env(project, run) if run else {}), **_sandbox_env(project)}
     spec = hook_config(run.run_id, autodev_command()) if run else None
     command = launch_command(
         provider,

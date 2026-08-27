@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from autodev import providers, sessions
 from autodev.config import load_project
 from autodev.sessions import (
     RunContext,
     _new_session_args,
+    _sandbox_env,
     _session_env,
     agent_status,
     autodev_command,
@@ -20,7 +22,7 @@ from autodev.sessions import (
     start_session,
     stop_session,
 )
-from autodev.workspaces import ensure_workspace
+from autodev.workspaces import Workspace, ensure_workspace
 
 
 def test_autodev_command_uses_absolute_interpreter() -> None:
@@ -52,6 +54,55 @@ def test_session_env_exports_provider_when_set(project_repo: Path) -> None:
     project = load_project(project_repo)
     env = _session_env(project, RunContext(run_id="r", role="engineering", kind="implement", provider="claude"))
     assert env["AUTODEV_PROVIDER"] == "claude"
+
+
+def _set_bypass(project_repo: Path, value: bool) -> None:
+    descriptor = project_repo / "autodev.toml"
+    descriptor.write_text(
+        descriptor.read_text(encoding="utf-8").replace(
+            "bypass_permissions = false",
+            f"bypass_permissions = {'true' if value else 'false'}",
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_sandbox_env_is_set_only_when_bypass(project_repo: Path) -> None:
+    # Unit 3: the sandbox env is keyed on bypass_permissions and is exactly "1".
+    assert _sandbox_env(load_project(project_repo)) == {}  # default descriptor: bypass false
+    _set_bypass(project_repo, True)
+    assert _sandbox_env(load_project(project_repo)) == {"IS_SANDBOX": "1"}
+
+
+def _capture_new_session_argv(project_repo: Path, tmp_path: Path, monkeypatch) -> list[str]:
+    """Start a session with a fake tmux/executable and return the new-session argv."""
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(project_repo)
+    agent = project.agent("backend")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "session_exists", lambda _name: False)
+    monkeypatch.setattr(providers, "executable_path", lambda _command: "/bin/fake")
+    monkeypatch.setattr(
+        sessions,
+        "_tmux",
+        lambda *args: calls.append(args) or subprocess.CompletedProcess(list(args), 0, "", ""),
+    )
+    workspace = Workspace(path=tmp_path / "work", branch="autodev/sample-project/backend")
+    started = start_session(project, agent, workspace, send_initial_goal=False)
+    assert started is True
+    return list(calls[0])  # calls[0] is the new-session invocation; calls[1] is pipe-pane
+
+
+def test_start_session_exports_sandbox_env_when_bypass(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    _set_bypass(project_repo, True)
+    argv = _capture_new_session_argv(project_repo, tmp_path, monkeypatch)
+    assert "-e" in argv
+    assert "IS_SANDBOX=1" in argv
+
+
+def test_start_session_omits_sandbox_env_without_bypass(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    argv = _capture_new_session_argv(project_repo, tmp_path, monkeypatch)  # default: bypass false
+    assert not any(arg.startswith("IS_SANDBOX") for arg in argv)
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is required")
