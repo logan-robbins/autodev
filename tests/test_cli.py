@@ -7,6 +7,7 @@ from pathlib import Path
 
 from autodev.cli import build_parser, main
 from autodev.config import load_project
+from autodev.podmemory import read_pod_memory
 from autodev.state import Registry, project_paths, write_role_law
 from autodev.trace import emit, new_event, read_events
 from autodev.wizard import WizardResult
@@ -224,6 +225,32 @@ def test_product_cli_rejects_invalid_payload(product_tree: Path, tmp_path: Path,
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([{"id": "x", "pillar": "replay-engine"}])))
     assert main(["product", "add-features", str(product_tree), "--pillar", "replay-engine"]) == 1
     assert "autodev:" in capsys.readouterr().err
+
+
+def test_pod_remember_appends_one_entry_from_stdin(tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    monkeypatch.setenv("AUTODEV_RUN_ID", "book-7")
+    monkeypatch.setattr("sys.stdin", io.StringIO("the rate-limit contract is frozen"))
+
+    assert main(["pod", "remember", "--pillar", "replay-engine", "--kind", "fact"]) == 0
+
+    entries = read_pod_memory("sample-project", "replay-engine", home=state)
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "fact"
+    assert entries[0]["text"] == "the rate-limit contract is frozen"
+    assert entries[0]["agent"] == "eng-replay-engine"  # derived from role + pillar
+    assert entries[0]["run_id"] == "book-7"
+
+
+def test_pod_remember_requires_session_env(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("AUTODEV_PROJECT", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO("orphan note"))
+    assert main(["pod", "remember", "--pillar", "replay-engine", "--kind", "fact"]) == 1
+    assert "AUTODEV_PROJECT" in capsys.readouterr().err
 
 
 def test_setup_command_accepts_optional_project_path() -> None:

@@ -21,6 +21,8 @@ from autodev.config import (
 )
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.podmemory import append_pod_memory
+from autodev.pods import pod_agent_id
 from autodev.policy import PolicyInput, decide
 from autodev.product import (
     ProductError,
@@ -235,6 +237,35 @@ def _charter_digest(run_id: str) -> int:
     return 0
 
 
+def _pod_remember(pillar: str, kind: str) -> int:
+    """Append one typed pod-memory entry from stdin (the `autodev pod remember` verb).
+
+    Resolves the project, role, and run from the session environment; the writing
+    agent id is derived deterministically from the role and pillar.
+    """
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    role = os.environ.get("AUTODEV_ROLE")
+    run_id = os.environ.get("AUTODEV_RUN_ID")
+    if not project_id or not role or not run_id:
+        raise ConfigError(
+            "`autodev pod remember` requires AUTODEV_PROJECT, AUTODEV_ROLE, and AUTODEV_RUN_ID in the session environment"
+        )
+    text = sys.stdin.read().strip()
+    if not text:
+        raise ConfigError("`autodev pod remember` requires memory text on stdin")
+    seq = append_pod_memory(
+        project_id,
+        pillar,
+        role=role,
+        agent=pod_agent_id(role, pillar),
+        run_id=run_id,
+        kind=kind,
+        text=text,
+    )
+    print(f"remembered {kind} #{seq} for pod {pillar}")
+    return 0
+
+
 def _red_test_recorded(run_id: str) -> bool:
     """True when a failing (red) verify step is already in this pass's trace."""
     try:
@@ -344,6 +375,12 @@ def build_parser() -> argparse.ArgumentParser:
     charter_digest = charter_commands.add_parser("digest", help="print the role law as hook additionalContext")
     charter_digest.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
 
+    pod = subparsers.add_parser("pod", help="pod-scoped shared memory for a pillar's team")
+    pod_commands = pod.add_subparsers(dest="pod_command", required=True)
+    pod_remember = pod_commands.add_parser("remember", help="append one typed pod-memory entry (text on stdin)")
+    pod_remember.add_argument("--pillar", required=True)
+    pod_remember.add_argument("--kind", required=True, choices=["fact", "decision", "handoff"])
+
     policy = subparsers.add_parser("policy", help="enforce the per-role/kind PreToolUse policy")
     policy_commands = policy.add_subparsers(dest="policy_command", required=True)
     policy_check = policy_commands.add_parser("check", help="block a denied tool call (exit 2) from a hook payload")
@@ -439,6 +476,10 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
         if args.charter_command != "digest":
             raise AssertionError(f"unhandled charter command: {args.charter_command}")
         return _charter_digest(args.run_id)
+    if args.command == "pod":
+        if args.pod_command != "remember":
+            raise AssertionError(f"unhandled pod command: {args.pod_command}")
+        return _pod_remember(args.pillar, args.kind)
     if args.command == "policy":
         if args.policy_command != "check":
             raise AssertionError(f"unhandled policy command: {args.policy_command}")
