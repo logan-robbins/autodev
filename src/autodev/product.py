@@ -269,6 +269,7 @@ def load_product_vision(project: ProjectConfig) -> dict[str, Any] | None:
 @dataclass(frozen=True)
 class PillarView:
     id: str
+    pillar: dict  # the validated pillar.json (why/value/goal/approval/docs)
     features: tuple[dict, ...]
 
 
@@ -290,8 +291,18 @@ class ProductTree:
                     return feature
         raise ProductError(f"unknown feature {feature_id!r}")
 
+    def pillar(self, pillar_id: str) -> PillarView:
+        for pillar in self.pillars:
+            if pillar.id == pillar_id:
+                return pillar
+        raise ProductError(f"unknown pillar {pillar_id!r}")
+
     def as_dict(self) -> dict[str, Any]:
-        return {"pillars": [{"id": pillar.id, "features": list(pillar.features)} for pillar in self.pillars]}
+        return {
+            "pillars": [
+                {"id": pillar.id, "pillar": pillar.pillar, "features": list(pillar.features)} for pillar in self.pillars
+            ]
+        }
 
 
 def _roles_for(project: ProjectConfig) -> tuple[str, ...]:
@@ -306,19 +317,37 @@ def product_root(project: ProjectConfig) -> Path:
 
 
 def enumerate_tree(project: ProjectConfig) -> ProductTree:
-    """Glob every ``feature.json``, validate it, and group by pillar.
+    """Discover pillars from ``pillar.json``, then nest their ``feature.json`` files.
 
-    Leaves are linked, not inlined: their content is loaded only on drill-down
-    (:func:`load_leaf`). Enumeration still fails fast on a dangling or duplicated
-    leaf ref, a feature whose ``pillar`` disagrees with its directory, or a
-    duplicate feature id — a broken tree is a bug, not something to render around.
+    A pillar is the enumeration key (contract C-P1): globbing ``pillar.json``
+    means a **feature-less pillar is still visible** — required for cold-start,
+    where the Product Manager creates a pillar before any feature exists. Leaves
+    are linked, not inlined (loaded on drill-down via :func:`load_leaf`).
+
+    Fails fast on a broken tree: a pillar whose ``id`` disagrees with its
+    directory, a duplicate pillar id, a feature under a directory with no
+    ``pillar.json``, a feature whose ``pillar`` disagrees with its directory, a
+    duplicate feature id, or a dangling/duplicated leaf ref.
     """
     roles = _roles_for(project)
     root = product_root(project)
-    grouped: dict[str, list[dict]] = {}
+
+    pillars_meta: dict[str, dict] = {}
+    for pillar_path in sorted(root.glob("*/pillar.json")):
+        pillar_dir = pillar_path.parent.name
+        pillar = validate_pillar(json.loads(pillar_path.read_text(encoding="utf-8")))
+        if pillar["id"] != pillar_dir:
+            raise ProductError(f"{pillar_path}: pillar.id {pillar['id']!r} does not match directory {pillar_dir!r}")
+        if pillar["id"] in pillars_meta:
+            raise ProductError(f"duplicate pillar id {pillar['id']!r} in the product tree")
+        pillars_meta[pillar["id"]] = pillar
+
+    grouped: dict[str, list[dict]] = {pillar_id: [] for pillar_id in pillars_meta}
     directories: dict[str, Path] = {}
     for feature_path in sorted(root.glob("*/features/*/feature.json")):
         pillar_dir = feature_path.parents[2].name
+        if pillar_dir not in pillars_meta:
+            raise ProductError(f"{feature_path}: feature under pillar {pillar_dir!r} which has no pillar.json")
         feature = validate_feature(json.loads(feature_path.read_text(encoding="utf-8")), roles=roles)
         if feature["pillar"] != pillar_dir:
             raise ProductError(
@@ -331,11 +360,15 @@ def enumerate_tree(project: ProjectConfig) -> ProductTree:
         for link in feature["leaves"]:
             if not (feature_path.parent / link["ref"]).is_file():
                 raise ProductError(f"feature {feature_id!r} references missing leaf {link['ref']!r}")
-        grouped.setdefault(pillar_dir, []).append(feature)
+        grouped[pillar_dir].append(feature)
 
     pillars = tuple(
-        PillarView(id=pillar_id, features=tuple(sorted(features, key=lambda f: f["id"])))
-        for pillar_id, features in sorted(grouped.items())
+        PillarView(
+            id=pillar_id,
+            pillar=pillars_meta[pillar_id],
+            features=tuple(sorted(grouped[pillar_id], key=lambda f: f["id"])),
+        )
+        for pillar_id in sorted(pillars_meta)
     )
     return ProductTree(pillars=pillars, directories=directories)
 

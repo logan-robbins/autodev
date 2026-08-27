@@ -1,13 +1,20 @@
-"""Schedule role-instances across the product tree; never implement.
+"""Schedule role-instances across the deterministic company tree; never implement.
 
-``tick`` reads the tree joined with its live trace and decides which nodes may
-advance: it expands pillars (Product Manager), then drives each approved
-feature's loop (Project Manager -> Engineering) under a concurrency limit. It
-honours the approval gate (decision #4) — a ``proposed`` feature is never
-scheduled downstream — and it emits ``phase_changed`` for every transition. The
-actual session launch is a seam (``launch``) so the scheduler is testable with
-``operations``/``sessions`` swapped for a fake; the orchestrator itself only
-composes them and never edits pod source.
+``tick`` reads the tree joined with its live trace and advances it one step, in
+this deterministic order:
+
+    0. cold-start  — empty tree + a product.json vision → a product-level PM pass
+    1. pillars     — an approved, feature-less pillar → a pillar PM (pm-<P>) pass
+                     (a proposed pillar is gated: nothing downstream runs)
+    2. features    — each approved feature's loop (PjM -> Eng -> PjM), one pass
+    3. docs-last   — a pillar whose every feature shipped and every leaf verified
+                     → a Technical Writer (tw-<P>) pass, flipping pillar docs
+                     pending -> active -> done
+
+Agent selection is deterministic via :func:`autodev.pods.select_member`; the
+descriptor is never mutated (pods are derived from the pillars). The launch is a
+seam (``launch``) so the scheduler is testable with a fake, and the orchestrator
+only composes ``ensure_workspace``/``start_session`` — it never edits pod source.
 """
 
 from __future__ import annotations
@@ -15,8 +22,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from autodev import product, trace
-from autodev.config import LoopConfig, ProjectConfig
+from autodev import pods, product, trace
+from autodev.config import ConfigError, LoopConfig, ProjectConfig
 from autodev.prompts import compose_law
 from autodev.sessions import RunContext, start_session
 from autodev.state import project_paths, write_role_law
@@ -27,12 +34,13 @@ _ROLE_KIND = {
     "product-manager": "search",
     "project-manager": "reconcile",
     "engineering": "implement",
+    "technical-writer": "document",
 }
 
 
 @dataclass(frozen=True)
 class ScheduleDecision:
-    level: str  # "pillar" | "feature"
+    level: str  # "product" | "pillar" | "feature"
     node_id: str
     role: str
     run_id: str
@@ -58,6 +66,11 @@ def _new_run_id(project: ProjectConfig, node_id: str, role: str) -> str:
     return candidate
 
 
+def _tw_run_id(pillar_id: str) -> str:
+    """A deterministic docs run id so an in-flight TW pass is found next tick."""
+    return f"{pillar_id}-technical-writer"
+
+
 def _emit_schedule(project: ProjectConfig, run_id: str, role: str, node_ref: dict, goal: str, prev: str | None) -> None:
     run_dir = _run_dir(project, run_id)
     trace.emit(run_dir, trace.new_event("run_started", run_id=run_id, role=role, node_ref=node_ref, goal=goal))
@@ -65,13 +78,6 @@ def _emit_schedule(project: ProjectConfig, run_id: str, role: str, node_ref: dic
         run_dir,
         trace.new_event("phase_changed", node_ref=node_ref, reason="scheduled", **{"from": prev or "none", "to": role}),
     )
-
-
-def _pillar_dirs(project: ProjectConfig) -> list[str]:
-    root = product.product_root(project)
-    if not root.exists():
-        return []
-    return sorted(child.name for child in root.iterdir() if child.is_dir())
 
 
 def _active_role(feature: dict) -> str | None:
@@ -98,25 +104,37 @@ def _next_after(feature: dict, role: str) -> str | None:
     return None
 
 
-def _select_agent(project: ProjectConfig, feature: dict | None) -> str | None:
-    """Pick the worker for a role-instance: pod match on the feature's pillar, else first.
+def _prev_done(feature: dict, role: str) -> str | None:
+    previous = None
+    for entry in feature["loop"]:
+        if entry["role"] == role:
+            return previous
+        if entry["s"] == "done":
+            previous = entry["role"]
+    return previous
 
-    The full role->agent assignment policy is a product decision beyond this build;
-    this default is deterministic and is exercised only through the launch seam.
-    """
-    if feature is not None:
-        for agent in project.agents:
-            if agent.pod and agent.pod == feature.get("pillar"):
-                return agent.id
-    return project.agents[0].id if project.agents else None
+
+def _read_run(project: ProjectConfig, run_id: str) -> trace.RunView | None:
+    events = trace.read_events(_run_dir(project, run_id))
+    if not events:
+        return None
+    return trace.to_dag(events)
+
+
+def _materialized_agent(project: ProjectConfig, agent_id: str):
+    for agent in pods.materialize(project):
+        if agent.id == agent_id:
+            return agent
+    raise ConfigError(f"no materialised agent {agent_id!r} for project {project.id!r}")
 
 
 def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
     """Start one role-instance session with its run env, hooks, and durable law."""
     if decision.agent is None:
         return
-    agent = project.agent(decision.agent)
-    workspace = ensure_workspace(project, agent, kind=_ROLE_KIND.get(decision.role))
+    agent = _materialized_agent(project, decision.agent)
+    kind = _ROLE_KIND.get(decision.role)
+    workspace = ensure_workspace(project, agent, kind=kind)
     law_file = None
     role_config = project.roles.get(decision.role)
     if role_config is not None:
@@ -129,24 +147,145 @@ def _default_launch(project: ProjectConfig, decision: ScheduleDecision) -> None:
         run=RunContext(
             run_id=decision.run_id,
             role=decision.role,
-            kind=_ROLE_KIND.get(decision.role, "tool"),
+            kind=kind or "tool",
             provider=agent.provider,
         ),
         law_file=law_file,
     )
 
 
+def _pillar_ready_for_docs(project: ProjectConfig, pillar: product.PillarView) -> bool:
+    """True when every feature is shipped (loop all done) and every leaf verified."""
+    if not pillar.features:
+        return False
+    for feature in pillar.features:
+        if not all(entry["s"] == "done" for entry in feature["loop"]):
+            return False
+        for link in feature["leaves"]:
+            if product.load_leaf(project, feature["id"], link["ref"])["status"] != "verified":
+                return False
+    return True
+
+
 def _count_running(project: ProjectConfig) -> int:
     running = 0
     for pillar in product.enumerate_tree(project).pillars:
         for feature in pillar.features:
-            active = _active_role(feature)
-            if active is None:
+            if _active_role(feature) is None:
                 continue
             view = product.join_run(project, feature)
             if view.run is None or view.run.status == "running":
                 running += 1
+        if pillar.pillar["docs"] == "active":
+            run = _read_run(project, _tw_run_id(pillar.id))
+            if run is None or run.status == "running":
+                running += 1
     return running
+
+
+def _drive_feature(
+    project: ProjectConfig,
+    feature: dict,
+    limits: LoopConfig,
+    running: int,
+    launch: Launcher,
+) -> tuple[list[ScheduleDecision], int]:
+    decisions: list[ScheduleDecision] = []
+    feature_id = feature["id"]
+    node_ref = {"level": "feature", "pillar": feature["pillar"], "feature": feature_id}
+    active = _active_role(feature)
+
+    if active is not None:
+        view = product.join_run(project, feature)
+        run_id = view.run.run_id if view.run else ""
+        if view.run is not None and view.run.status in {"done", "failed"}:
+            product.set_loop_state(project, feature_id, active, "done")
+            nxt = _next_after(feature, active)
+            trace.emit(
+                _run_dir(project, run_id),
+                trace.new_event(
+                    "phase_changed",
+                    node_ref=node_ref,
+                    reason="pass complete",
+                    **{"from": active, "to": nxt or "shipped"},
+                ),
+            )
+            decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "advanced"))
+        else:
+            decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "running"))
+        return decisions, running
+
+    if feature["approval"] == "proposed":
+        decisions.append(ScheduleDecision("feature", feature_id, _frontier_role(feature) or "", "", "gated"))
+        return decisions, running
+
+    frontier = _frontier_role(feature)
+    if frontier is None:
+        decisions.append(ScheduleDecision("feature", feature_id, "", "", "shipped"))
+        return decisions, running
+    if running >= limits.max_concurrent:
+        decisions.append(ScheduleDecision("feature", feature_id, frontier, "", "at-capacity"))
+        return decisions, running
+
+    run_id = _new_run_id(project, feature_id, frontier)
+    product.set_loop_state(project, feature_id, frontier, "active")
+    product.set_run_ref(project, feature_id, run_id)
+    prev = _prev_done(feature, frontier)
+    _emit_schedule(project, run_id, frontier, node_ref, f"Run {frontier} on feature {feature_id}.", prev)
+    decision = ScheduleDecision(
+        "feature", feature_id, frontier, run_id, "scheduled", pods.select_member(project, frontier, feature["pillar"])
+    )
+    launch(project, decision)
+    return [*decisions, decision], running + 1
+
+
+def _drive_docs(
+    project: ProjectConfig,
+    pillar: product.PillarView,
+    limits: LoopConfig,
+    running: int,
+    launch: Launcher,
+) -> tuple[list[ScheduleDecision], int]:
+    docs = pillar.pillar["docs"]
+    if docs == "done":
+        return [], running
+    node_ref = {"level": "pillar", "pillar": pillar.id}
+    tw_run_id = _tw_run_id(pillar.id)
+
+    if docs == "active":
+        run = _read_run(project, tw_run_id)
+        if run is not None and run.status in {"done", "failed"}:
+            product.set_pillar_docs(project, pillar.id, "done")
+            trace.emit(
+                _run_dir(project, tw_run_id),
+                trace.new_event(
+                    "phase_changed",
+                    node_ref=node_ref,
+                    reason="docs complete",
+                    **{"from": "technical-writer", "to": "documented"},
+                ),
+            )
+            return [ScheduleDecision("pillar", pillar.id, "technical-writer", tw_run_id, "advanced")], running
+        return [ScheduleDecision("pillar", pillar.id, "technical-writer", tw_run_id, "running")], running
+
+    # docs == "pending"
+    if not _pillar_ready_for_docs(project, pillar):
+        return [ScheduleDecision("pillar", pillar.id, "technical-writer", "", "gated")], running
+    if running >= limits.max_concurrent:
+        return [ScheduleDecision("pillar", pillar.id, "technical-writer", "", "at-capacity")], running
+
+    product.set_pillar_docs(project, pillar.id, "active")
+    _emit_schedule(project, tw_run_id, "technical-writer", node_ref, f"Document pillar {pillar.id}.", None)
+    decision = ScheduleDecision(
+        "pillar",
+        pillar.id,
+        "technical-writer",
+        tw_run_id,
+        "scheduled",
+        pods.select_member(project, "technical-writer", pillar.id),
+    )
+    launch(project, decision)
+    return [decision], running + 1
 
 
 def tick(project: ProjectConfig, *, limits: LoopConfig, launch: Launcher | None = None) -> list[ScheduleDecision]:
@@ -154,86 +293,52 @@ def tick(project: ProjectConfig, *, limits: LoopConfig, launch: Launcher | None 
     launch = launch or _default_launch
     decisions: list[ScheduleDecision] = []
     running = _count_running(project)
-
     tree = product.enumerate_tree(project)
-    pillars_with_features = {pillar.id for pillar in tree.pillars}
 
-    # 1. Pillar-level: schedule a Product-Manager pass to expand an empty pillar.
-    for pillar in _pillar_dirs(project):
-        if pillar in pillars_with_features:
-            continue
+    # Step 0: cold-start — an empty tree plus a product vision bootstraps pillars.
+    if not tree.pillars:
+        if product.load_product_vision(project) is None:
+            return decisions
+        agent = pods.select_member(project, "product-manager", None)
         if running >= limits.max_concurrent:
-            decisions.append(ScheduleDecision("pillar", pillar, "product-manager", "", "at-capacity"))
-            continue
-        run_id = _new_run_id(project, pillar, "product-manager")
-        node_ref = {"level": "pillar", "pillar": pillar}
-        _emit_schedule(project, run_id, "product-manager", node_ref, f"Expand pillar {pillar} into features.", None)
-        decision = ScheduleDecision(
-            "pillar", pillar, "product-manager", run_id, "scheduled", _select_agent(project, None)
+            return [ScheduleDecision("product", project.id, "product-manager", "", "at-capacity", agent)]
+        run_id = _new_run_id(project, "product", "product-manager")
+        _emit_schedule(
+            project, run_id, "product-manager", {"level": "product"}, "Bootstrap pillars from the product vision.", None
         )
+        decision = ScheduleDecision("product", project.id, "product-manager", run_id, "scheduled", agent)
         launch(project, decision)
-        running += 1
-        decisions.append(decision)
+        return [decision]
 
-    # 2. Feature-level: drive each approved feature's loop.
     for pillar in tree.pillars:
-        for feature in pillar.features:
-            feature_id = feature["id"]
-            node_ref = {"level": "feature", "pillar": feature["pillar"], "feature": feature_id}
-            active = _active_role(feature)
+        node_ref = {"level": "pillar", "pillar": pillar.id}
+        if pillar.pillar["approval"] == "proposed":
+            decisions.append(ScheduleDecision("pillar", pillar.id, "product-manager", "", "gated"))
+            continue
 
-            if active is not None:
-                view = product.join_run(project, feature)
-                run_id = view.run.run_id if view.run else ""
-                if view.run is not None and view.run.status in {"done", "failed"}:
-                    product.set_loop_state(project, feature_id, active, "done")
-                    nxt = _next_after(feature, active)
-                    trace.emit(
-                        _run_dir(project, run_id),
-                        trace.new_event(
-                            "phase_changed",
-                            node_ref=node_ref,
-                            reason="pass complete",
-                            **{"from": active, "to": nxt or "shipped"},
-                        ),
-                    )
-                    decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "advanced"))
-                else:
-                    decisions.append(ScheduleDecision("feature", feature_id, active, run_id, "running"))
-                continue
-
-            if feature["approval"] == "proposed":
-                decisions.append(ScheduleDecision("feature", feature_id, _frontier_role(feature) or "", "", "gated"))
-                continue
-
-            frontier = _frontier_role(feature)
-            if frontier is None:
-                decisions.append(ScheduleDecision("feature", feature_id, "", "", "shipped"))
-                continue
+        # Step 1: an approved, feature-less pillar → schedule pm-<P> to expand it.
+        if not pillar.features:
+            agent = pods.select_member(project, "product-manager", pillar.id)
             if running >= limits.max_concurrent:
-                decisions.append(ScheduleDecision("feature", feature_id, frontier, "", "at-capacity"))
+                decisions.append(ScheduleDecision("pillar", pillar.id, "product-manager", "", "at-capacity", agent))
                 continue
-
-            run_id = _new_run_id(project, feature_id, frontier)
-            product.set_loop_state(project, feature_id, frontier, "active")
-            product.set_run_ref(project, feature_id, run_id)
-            prev = _prev_done(feature, frontier)
-            _emit_schedule(project, run_id, frontier, node_ref, f"Run {frontier} on feature {feature_id}.", prev)
-            decision = ScheduleDecision(
-                "feature", feature_id, frontier, run_id, "scheduled", _select_agent(project, feature)
+            run_id = _new_run_id(project, pillar.id, "product-manager")
+            _emit_schedule(
+                project, run_id, "product-manager", node_ref, f"Expand pillar {pillar.id} into features.", None
             )
+            decision = ScheduleDecision("pillar", pillar.id, "product-manager", run_id, "scheduled", agent)
             launch(project, decision)
             running += 1
             decisions.append(decision)
+            continue
+
+        # Step 2: drive each feature's loop.
+        for feature in pillar.features:
+            feature_decisions, running = _drive_feature(project, feature, limits, running, launch)
+            decisions.extend(feature_decisions)
+
+        # Step 3: docs-last gate.
+        docs_decisions, running = _drive_docs(project, pillar, limits, running, launch)
+        decisions.extend(docs_decisions)
 
     return decisions
-
-
-def _prev_done(feature: dict, role: str) -> str | None:
-    previous = None
-    for entry in feature["loop"]:
-        if entry["role"] == role:
-            return previous
-        if entry["s"] == "done":
-            previous = entry["role"]
-    return previous

@@ -293,6 +293,58 @@ def test_enumerate_fails_fast_on_pillar_dir_mismatch(product_tree: Path) -> None
         enumerate_tree(load_project(product_tree))
 
 
+# --- E2: enumeration keyed on pillar.json ------------------------------------
+
+
+def test_enumerate_carries_pillar_meta(product_tree: Path) -> None:
+    tree = enumerate_tree(load_project(product_tree))
+    pillar = tree.pillar("replay-engine")
+    assert pillar.pillar["approval"] == "approved"
+    assert pillar.pillar["docs"] == "pending"
+    assert pillar.pillar["why"].startswith("Operators cannot")
+
+
+def test_enumerate_shows_a_feature_less_pillar(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    add_pillars(
+        project,
+        [{"id": "cold-store", "name": "Cold Store", "why": "w", "value": "v", "goal": "g", "approval": "proposed"}],
+    )
+    tree = enumerate_tree(load_project(product_tree))
+    assert [p.id for p in tree.pillars] == ["cold-store", "replay-engine"]  # sorted
+    assert tree.pillar("cold-store").features == ()  # visible with zero features
+
+
+def test_enumerate_fails_fast_on_feature_without_pillar_json(product_tree: Path) -> None:
+    orphan = product_tree / "product" / "pillars" / "orphan" / "features" / "f" / "feature.json"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(
+        json.dumps(
+            {
+                "id": "f",
+                "pillar": "orphan",
+                "name": "F",
+                "approval": "proposed",
+                "loop": [{"role": "engineering", "s": "pending"}],
+                "run_ref": None,
+                "leaves": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ProductError, match="has no pillar.json"):
+        enumerate_tree(load_project(product_tree))
+
+
+def test_enumerate_fails_fast_on_pillar_id_dir_mismatch(product_tree: Path) -> None:
+    path = product_tree / "product" / "pillars" / "replay-engine" / "pillar.json"
+    pillar = json.loads(path.read_text(encoding="utf-8"))
+    pillar["id"] = "renamed"
+    path.write_text(json.dumps(pillar), encoding="utf-8")
+    with pytest.raises(ProductError, match="does not match directory"):
+        enumerate_tree(load_project(product_tree))
+
+
 def test_load_leaf_follows_ref_lazily(product_tree: Path) -> None:
     project = load_project(product_tree)
     leaf = load_leaf(project, "certified-l3-book", "leaves/store/leaf.json")
@@ -549,33 +601,9 @@ def test_set_loop_state_rejects_unknown_role(product_tree: Path) -> None:
 
 # --- E4: add_features defaults the loop from [loop].sequence ------------------
 
-_COMPANY_TABLES = """
-[loop]
-sequence = ["project-manager", "engineering", "project-manager"]
-reenter_product_manager_when = ["new-requirement"]
-max_concurrent = 4
-
-[roles.product-manager]
-shape = "research"
-charter = "Own the Pillar tier."
-
-[roles.project-manager]
-shape = "reconcile"
-charter = "Own the Feature backlog."
-
-[roles.engineering]
-shape = "contract-first"
-charter = "Own the Task."
-
-[roles.technical-writer]
-shape = "document"
-charter = "Own the docs; run last."
-"""
-
 
 def _company_project(product_tree: Path):
-    descriptor = product_tree / "autodev.toml"
-    descriptor.write_text(descriptor.read_text(encoding="utf-8") + _COMPANY_TABLES, encoding="utf-8")
+    # product_tree already carries the company [loop]/[roles]/[pods] tables.
     return load_project(product_tree)
 
 
