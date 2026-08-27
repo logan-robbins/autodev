@@ -31,9 +31,11 @@ from autodev.policy import PolicyInput, decide
 from autodev.product import (
     ProductError,
     add_features,
+    add_pillars,
     decompose_feature,
     set_approval,
     set_leaf_status,
+    set_pillar_approval,
 )
 from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
@@ -352,7 +354,13 @@ def _stdin_json_list(label: str) -> list:
 
 def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
     """Typed tree-authoring verbs (decision #3): schema-validated, atomic writes."""
-    if args.product_command == "add-features":
+    if args.product_command == "add-pillars":
+        paths = add_pillars(project, _stdin_json_list("pillars"))
+        print(f"wrote {len(paths)} pillar file(s)")
+    elif args.product_command == "set-pillar-approval":
+        path = set_pillar_approval(project, args.pillar, args.approval)
+        print(f"set pillar {args.pillar} approval to {args.approval} ({path})")
+    elif args.product_command == "add-features":
         paths = add_features(project, args.pillar, _stdin_json_list("features"))
         print(f"wrote {len(paths)} feature file(s) under pillar {args.pillar}")
     elif args.product_command == "decompose-feature":
@@ -450,6 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     product = subparsers.add_parser("product", help="author the product tree through typed, validated verbs")
     product_commands = product.add_subparsers(dest="product_command", required=True)
+    add_pillars_cmd = product_commands.add_parser("add-pillars", help="write pillar.json files (JSON array on stdin)")
+    _add_project_argument(add_pillars_cmd, required=True)
+    pillar_approval_cmd = product_commands.add_parser("set-pillar-approval", help="flip a pillar's approval gate")
+    _add_project_argument(pillar_approval_cmd, required=True)
+    pillar_approval_cmd.add_argument("--pillar", required=True)
+    pillar_approval_cmd.add_argument("--approval", required=True, choices=["proposed", "approved"])
     add_features_cmd = product_commands.add_parser(
         "add-features", help="write feature.json files (JSON array on stdin)"
     )

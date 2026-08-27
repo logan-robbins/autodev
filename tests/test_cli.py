@@ -259,6 +259,25 @@ def test_product_cli_set_leaf_status_and_approval(product_tree: Path, tmp_path: 
     assert enumerate_tree(project).feature("fast-ingest")["approval"] == "approved"
 
 
+def test_product_cli_add_pillars_and_set_pillar_approval(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    pillars = [
+        {"id": "cold-store", "name": "Cold Store", "why": "w", "value": "v", "goal": "g", "approval": "proposed"}
+    ]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(pillars)))
+    assert main(["product", "add-pillars", str(product_tree)]) == 0
+
+    assert (
+        main(["product", "set-pillar-approval", str(product_tree), "--pillar", "cold-store", "--approval", "approved"])
+        == 0
+    )
+
+    from autodev.product import enumerate_tree
+
+    tree = enumerate_tree(load_project(product_tree))
+    assert tree.pillar("cold-store").pillar["approval"] == "approved"
+
+
 def test_product_cli_rejects_invalid_payload(product_tree: Path, tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([{"id": "x", "pillar": "replay-engine"}])))
