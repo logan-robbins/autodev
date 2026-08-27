@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from autodev import trace
-from autodev.config import _ID_RE, ProjectConfig
+from autodev.config import _ID_RE, AgentConfig, ProjectConfig
 from autodev.state import atomic_write_text, project_paths
 
 PRODUCT_ROOT = ("product", "pillars")
@@ -627,3 +628,126 @@ def set_loop_state(project: ProjectConfig, feature_id: str, role: str, state: st
     new_loop = [{"role": e["role"], "s": state if e["role"] == role else e["s"]} for e in loop]
     _write_json(path, validate_feature({**feature, "loop": new_loop}, roles=_roles_for(project)))
     return path
+
+
+# --- reset: clear the product, keep the company ------------------------------
+# "Fire the staff and clear the product; keep the operating manual." The reset
+# removes only Autodev's product tree and pod runtime state — it never touches
+# ``autodev.toml`` (roles/personas, [loop], the [pods] template, providers), the
+# operator skill, static [[agents]], or any other repository content.
+
+
+@dataclass(frozen=True)
+class ResetPlan:
+    """What a product reset would clear (also the summary of what it cleared).
+
+    ``repo_files`` are tracked files removed from the project working tree (left
+    as ordinary uncommitted deletions for the operator to review — never
+    auto-committed). ``runtime_dirs`` live under ``AUTODEV_HOME``. ``pod_worktrees``
+    and ``pod_branches`` are the dynamically-materialised per-pillar pods
+    (``<pm|pjm|eng|tw>-<pillar>``); static ``[[agents]]`` and the product-level
+    ``pm`` bootstrap pod are never in this set.
+    """
+
+    repo_files: tuple[Path, ...]
+    runtime_dirs: tuple[Path, ...]
+    pod_worktrees: tuple[Path, ...]
+    pod_branches: tuple[str, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.repo_files or self.runtime_dirs or self.pod_worktrees or self.pod_branches)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "repo_files": [str(path) for path in self.repo_files],
+            "runtime_dirs": [str(path) for path in self.runtime_dirs],
+            "pod_worktrees": [str(path) for path in self.pod_worktrees],
+            "pod_branches": list(self.pod_branches),
+        }
+
+
+def _dynamic_pods(project: ProjectConfig) -> list[AgentConfig]:
+    """The per-pillar pods materialised over the pillars on disk (never static agents).
+
+    ``pods.materialize`` is a pure function of ``(descriptor template, pillars on
+    disk)``; a per-pillar pod is exactly one whose ``pod`` is set and whose id is
+    not a declared static ``[[agents]]``. This excludes both static agents and the
+    product-level ``pm`` bootstrap (``pod is None``).
+    """
+    from autodev import pods
+
+    static_ids = {agent.id for agent in project.agents}
+    return [agent for agent in pods.materialize(project) if agent.pod is not None and agent.id not in static_ids]
+
+
+def plan_reset(project: ProjectConfig, *, home: Path | None = None) -> ResetPlan:
+    """Compute what :func:`reset_product` would clear, without deleting anything."""
+    from autodev import workspaces
+
+    repo_files: list[Path] = []
+    product_json = product_json_path(project)
+    if product_json.is_file():
+        repo_files.append(product_json)
+    pillars_root = product_root(project)
+    if pillars_root.exists():
+        repo_files.extend(sorted(path for path in pillars_root.rglob("*") if path.is_file()))
+
+    paths = project_paths(project.id, home=home)
+    runtime_dirs = tuple(directory for directory in (paths.runs, paths.pods) if directory.exists())
+
+    pod_worktrees: list[Path] = []
+    pod_branches: list[str] = []
+    for agent in _dynamic_pods(project):
+        destination = workspaces.workspace_path(project, agent, home=home)
+        branch = workspaces.workspace_branch(project, agent)
+        if destination.exists():
+            pod_worktrees.append(destination)
+        if workspaces.branch_exists(project.root, branch):
+            pod_branches.append(branch)
+
+    return ResetPlan(
+        repo_files=tuple(repo_files),
+        runtime_dirs=runtime_dirs,
+        pod_worktrees=tuple(pod_worktrees),
+        pod_branches=tuple(pod_branches),
+    )
+
+
+def reset_product(project: ProjectConfig, *, home: Path | None = None) -> ResetPlan:
+    """Clear the product tree and pod runtime state; keep the company (contract C-R1).
+
+    Deletes, in order that keeps Git consistent:
+
+    1. the dynamic per-pillar pod worktrees and branches (computed while the
+       pillars still exist on disk),
+    2. ``product/pillars/**`` and ``product/product.json`` from the working tree,
+    3. ``runs/**`` and ``pods/**`` under ``AUTODEV_HOME``.
+
+    Returns the plan captured *before* deletion (== what was cleared). Never
+    touches ``autodev.toml``, the operator skill, static ``[[agents]]``, or any
+    other repository content.
+    """
+    from autodev import workspaces
+
+    plan = plan_reset(project, home=home)
+
+    # Pods first: materialisation reads the pillars, so tear them down before the
+    # tree is removed. Force-remove discards any unmerged pod work by design.
+    for agent in _dynamic_pods(project):
+        workspaces.remove_workspace(project, agent, home=home)
+
+    pillars_root = product_root(project)
+    if pillars_root.exists():
+        shutil.rmtree(pillars_root)
+    product_json_path(project).unlink(missing_ok=True)
+    product_dir = project.root / PRODUCT_ROOT[0]
+    if product_dir.is_dir() and not any(product_dir.iterdir()):
+        product_dir.rmdir()
+
+    paths = project_paths(project.id, home=home)
+    for directory in (paths.runs, paths.pods):
+        if directory.exists():
+            shutil.rmtree(directory)
+
+    return plan

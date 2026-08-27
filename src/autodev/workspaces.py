@@ -94,6 +94,11 @@ def _git(
     return result
 
 
+def branch_exists(root: Path, branch: str) -> bool:
+    """True when ``refs/heads/<branch>`` resolves in the repository at ``root``."""
+    return _git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
+
+
 def _validate_existing(path: Path, branch: str) -> None:
     if not (path / ".git").is_file():
         raise WorkspaceError(f"{path} exists but is not an Autodev Git worktree")
@@ -119,18 +124,7 @@ def ensure_workspace(
         _validate_existing(destination, branch)
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        branch_exists = (
-            _git(
-                project.root,
-                "show-ref",
-                "--verify",
-                "--quiet",
-                f"refs/heads/{branch}",
-                check=False,
-            ).returncode
-            == 0
-        )
-        if branch_exists:
+        if branch_exists(project.root, branch):
             _git(project.root, "worktree", "add", "--no-checkout", str(destination), branch)
         else:
             _git(
@@ -149,6 +143,28 @@ def ensure_workspace(
     _git(destination, "sparse-checkout", "set", "--no-cone", "--stdin", input_text=patterns)
     _git(destination, "checkout", branch)
     return Workspace(path=destination, branch=branch)
+
+
+def remove_workspace(project: ProjectConfig, agent: AgentConfig, *, home: Path | None = None) -> bool:
+    """Tear down one agent's sparse worktree and branch — the twin of ``ensure_workspace``.
+
+    Same path/branch derivation as creation. Force-removes the worktree (an
+    Autodev reset discards any unmerged pod work by design), then force-deletes
+    the branch; the worktree must go first so Git will release the branch.
+    Returns ``True`` when a worktree or branch existed. Only ever touches an
+    Autodev-managed worktree under ``AUTODEV_HOME`` and its ``autodev/<project>/``
+    branch — never the project working tree.
+    """
+    destination = workspace_path(project, agent, home=home)
+    branch = workspace_branch(project, agent)
+    removed = False
+    if destination.exists():
+        _git(project.root, "worktree", "remove", "--force", str(destination))
+        removed = True
+    if branch_exists(project.root, branch):
+        _git(project.root, "branch", "-D", branch)
+        removed = True
+    return removed
 
 
 def git_status(workspace: Workspace) -> str:

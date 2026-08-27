@@ -5,10 +5,13 @@ from pathlib import Path
 
 from autodev.config import AgentConfig, load_project
 from autodev.workspaces import (
+    branch_exists,
     ensure_workspace,
     ownership_violations,
+    remove_workspace,
     sparse_paths,
     workspace_branch,
+    workspace_path,
 )
 
 
@@ -55,6 +58,22 @@ def test_materializes_external_sparse_agent_worktree(project_repo: Path, tmp_pat
             check=True,
         ).stdout
     )
+
+
+def test_remove_workspace_tears_down_worktree_and_branch(project_repo: Path, tmp_path: Path) -> None:
+    home = tmp_path / "state"
+    project = load_project(project_repo)
+    agent = project.agent("backend")
+    workspace = ensure_workspace(project, agent, home=home)
+    branch = workspace_branch(project, agent)
+    assert workspace.path.exists()
+    assert branch_exists(project.root, branch)
+
+    assert remove_workspace(project, agent, home=home) is True
+    assert not workspace_path(project, agent, home=home).exists()
+    assert not branch_exists(project.root, branch)
+    # Idempotent: a second teardown finds nothing to remove.
+    assert remove_workspace(project, agent, home=home) is False
 
 
 def test_ownership_gate_detects_context_edits(project_repo: Path, tmp_path: Path) -> None:

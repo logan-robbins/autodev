@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from autodev import trace
+from autodev import pods, trace
 from autodev.config import load_project
 from autodev.product import (
     ProductError,
+    ResetPlan,
     add_features,
     add_pillars,
     decompose_feature,
@@ -17,7 +18,10 @@ from autodev.product import (
     join_run,
     load_leaf,
     load_product_vision,
+    plan_reset,
     product_json_path,
+    product_root,
+    reset_product,
     set_approval,
     set_leaf_status,
     set_loop_state,
@@ -29,8 +33,9 @@ from autodev.product import (
     validate_pillar,
     validate_product,
 )
-from autodev.state import project_paths
+from autodev.state import pod_memory_path, project_paths
 from autodev.trace import new_event
+from autodev.workspaces import branch_exists, ensure_workspace, workspace_branch, workspace_path
 
 
 def _feature(**overrides) -> dict:
@@ -647,3 +652,91 @@ def test_add_features_preserves_an_explicit_loop(product_tree: Path) -> None:
     )
     written = _read_feature_json(product_tree, "replay-engine", "warm-path")
     assert written["loop"] == [{"role": "engineering", "s": "active"}]
+
+
+# --- reset: clear the product, keep the company ------------------------------
+
+
+def test_plan_reset_previews_targets_without_deleting(product_tree: Path, tmp_path: Path) -> None:
+    project = _company_project(product_tree)
+    plan = plan_reset(project, home=tmp_path / "home")
+
+    assert isinstance(plan, ResetPlan)
+    assert not plan.is_empty
+    assert product_json_path(project) in plan.repo_files
+    # A dry-run must not touch a single file.
+    assert product_json_path(project).is_file()
+    assert product_root(project).exists()
+
+
+def test_reset_product_clears_the_tree_and_preserves_the_descriptor(product_tree: Path, tmp_path: Path) -> None:
+    project = _company_project(product_tree)
+    toml_before = (product_tree / "autodev.toml").read_bytes()
+    readme_before = (product_tree / "README.md").read_bytes()
+
+    summary = reset_product(project, home=tmp_path / "home")
+
+    # Exactly the product paths are cleared.
+    assert not product_json_path(project).exists()
+    assert not product_root(project).exists()
+    assert not (product_tree / "product").exists()
+    assert list(product_tree.rglob("pillar.json")) == []
+    assert list(product_tree.rglob("feature.json")) == []
+    assert list(product_tree.rglob("leaf.json")) == []
+    # autodev.toml is byte-identical; unrelated repository content is untouched.
+    assert (product_tree / "autodev.toml").read_bytes() == toml_before
+    assert (product_tree / "README.md").read_bytes() == readme_before
+    assert (product_tree / "src" / "backend" / "app.py").is_file()
+    # The summary enumerates the product files it removed.
+    cleared = {path.name for path in summary.repo_files}
+    assert {"product.json", "pillar.json", "feature.json", "leaf.json"} <= cleared
+
+
+def test_reset_product_fires_dynamic_pods_and_keeps_the_company(product_tree: Path, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    project = _company_project(product_tree)
+    toml_before = (product_tree / "autodev.toml").read_bytes()
+
+    # Materialise every pod the runtime would and give each a real worktree.
+    materialized = pods.materialize(project)
+    for agent in materialized:
+        ensure_workspace(project, agent, home=home)
+
+    static_ids = {agent.id for agent in project.agents}
+    dynamic = [agent for agent in materialized if agent.pod is not None and agent.id not in static_ids]
+    preserved = [agent for agent in materialized if agent.pod is None or agent.id in static_ids]
+    assert {agent.id for agent in dynamic} == {
+        "pm-replay-engine",
+        "pjm-replay-engine",
+        "eng-replay-engine",
+        "tw-replay-engine",
+    }
+    assert {agent.id for agent in preserved} == {"backend", "pm"}
+
+    # Seed pod-runtime state under AUTODEV_HOME (a run trace and pod memory).
+    paths = project_paths(project.id, home=home)
+    (paths.runs / "book-7").mkdir(parents=True)
+    (paths.runs / "book-7" / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    memory = pod_memory_path(project.id, "replay-engine", home=home)
+    memory.parent.mkdir(parents=True, exist_ok=True)
+    memory.write_text('{"seq": 1}\n', encoding="utf-8")
+
+    summary = reset_product(project, home=home)
+
+    # Product tree and pod-runtime state are gone.
+    assert not (product_tree / "product").exists()
+    assert not paths.runs.exists()
+    assert not paths.pods.exists()
+    # Dynamic per-pillar pods: both worktree and branch removed.
+    for agent in dynamic:
+        assert not workspace_path(project, agent, home=home).exists()
+        assert not branch_exists(project.root, workspace_branch(project, agent))
+    # Company preserved: static agent and the product-level pm bootstrap survive.
+    for agent in preserved:
+        assert workspace_path(project, agent, home=home).exists()
+        assert branch_exists(project.root, workspace_branch(project, agent))
+    # autodev.toml untouched.
+    assert (product_tree / "autodev.toml").read_bytes() == toml_before
+    # The summary names exactly the dynamic pods it tore down.
+    assert set(summary.pod_branches) == {workspace_branch(project, agent) for agent in dynamic}
+    assert len(summary.pod_worktrees) == len(dynamic)

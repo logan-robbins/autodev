@@ -430,3 +430,31 @@ def test_setup_starts_the_bound_project_ui(project_repo: Path, tmp_path: Path, m
     assert main(["setup", str(project_repo)]) == 0
 
     assert served == [project]
+
+
+def test_product_reset_previews_and_exits_nonzero_without_yes(
+    product_tree: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+
+    assert main(["product", "reset", str(product_tree)]) == 1
+
+    out = capsys.readouterr().out
+    assert "would clear" in out
+    assert "re-run with --yes" in out
+    # The guard deleted nothing.
+    assert (product_tree / "product" / "product.json").is_file()
+    assert (product_tree / "product" / "pillars" / "replay-engine" / "pillar.json").is_file()
+
+
+def test_product_reset_with_yes_clears_tree_and_keeps_descriptor(
+    product_tree: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    toml_before = (product_tree / "autodev.toml").read_bytes()
+
+    assert main(["product", "reset", str(product_tree), "--yes"]) == 0
+
+    assert "cleared" in capsys.readouterr().out
+    assert not (product_tree / "product").exists()
+    assert (product_tree / "autodev.toml").read_bytes() == toml_before
