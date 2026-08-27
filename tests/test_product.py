@@ -545,3 +545,77 @@ def test_set_loop_state_rejects_unknown_role(product_tree: Path) -> None:
     project = load_project(product_tree)
     with pytest.raises(ProductError, match="no role"):
         set_loop_state(project, "fast-ingest", "designer", "active")
+
+
+# --- E4: add_features defaults the loop from [loop].sequence ------------------
+
+_COMPANY_TABLES = """
+[loop]
+sequence = ["project-manager", "engineering", "project-manager"]
+reenter_product_manager_when = ["new-requirement"]
+max_concurrent = 4
+
+[roles.product-manager]
+shape = "research"
+charter = "Own the Pillar tier."
+
+[roles.project-manager]
+shape = "reconcile"
+charter = "Own the Feature backlog."
+
+[roles.engineering]
+shape = "contract-first"
+charter = "Own the Task."
+
+[roles.technical-writer]
+shape = "document"
+charter = "Own the docs; run last."
+"""
+
+
+def _company_project(product_tree: Path):
+    descriptor = product_tree / "autodev.toml"
+    descriptor.write_text(descriptor.read_text(encoding="utf-8") + _COMPANY_TABLES, encoding="utf-8")
+    return load_project(product_tree)
+
+
+def _read_feature_json(product_tree: Path, pillar: str, feature_id: str) -> dict:
+    path = product_tree / "product" / "pillars" / pillar / "features" / feature_id / "feature.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_add_features_defaults_loop_to_the_sequence(product_tree: Path) -> None:
+    project = _company_project(product_tree)
+    add_features(
+        project,
+        "replay-engine",
+        [{"id": "cold-path", "pillar": "replay-engine", "name": "Cold path", "approval": "proposed", "leaves": []}],
+    )
+    written = _read_feature_json(product_tree, "replay-engine", "cold-path")
+    assert written["loop"] == [
+        {"role": "project-manager", "s": "pending"},
+        {"role": "engineering", "s": "pending"},
+        {"role": "project-manager", "s": "pending"},
+    ]
+    # PM/TW are pillar-level, never feature-loop entries.
+    assert not any(entry["role"] in {"product-manager", "technical-writer"} for entry in written["loop"])
+
+
+def test_add_features_preserves_an_explicit_loop(product_tree: Path) -> None:
+    project = _company_project(product_tree)
+    add_features(
+        project,
+        "replay-engine",
+        [
+            {
+                "id": "warm-path",
+                "pillar": "replay-engine",
+                "name": "Warm path",
+                "approval": "proposed",
+                "loop": [{"role": "engineering", "s": "active"}],
+                "leaves": [],
+            }
+        ],
+    )
+    written = _read_feature_json(product_tree, "replay-engine", "warm-path")
+    assert written["loop"] == [{"role": "engineering", "s": "active"}]

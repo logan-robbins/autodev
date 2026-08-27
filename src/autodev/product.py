@@ -449,12 +449,34 @@ def add_pillars(project: ProjectConfig, pillars: Sequence[Mapping[str, Any]]) ->
     return paths
 
 
+def _default_feature_loop(project: ProjectConfig) -> list[dict[str, str]] | None:
+    """The FEATURE loop a PM-emitted feature gets when the spec omits one.
+
+    Stamped from ``[loop].sequence`` (PjM -> Eng -> PjM); the Product Manager
+    and Technical Writer are pillar-level steps and are never feature-loop
+    entries. ``None`` when no sequence is configured to default from.
+    """
+    if project.loop is None or not project.loop.sequence:
+        return None
+    return [{"role": role, "s": "pending"} for role in project.loop.sequence]
+
+
 def add_features(project: ProjectConfig, pillar: str, features: Sequence[Mapping[str, Any]]) -> list[Path]:
-    """Create one feature.json per spec under ``pillar`` (validate all, then write)."""
+    """Create one feature.json per spec under ``pillar`` (validate all, then write).
+
+    When a spec omits ``loop``, it defaults to the feature loop stamped from
+    ``[loop].sequence`` so a PM never has to hand-write the loop.
+    """
     pillar = _identifier(pillar, "pillar")
     roles = _roles_for(project)
+    default_loop = _default_feature_loop(project)
     validated = []
-    for spec in features:
+    for raw_spec in features:
+        spec = dict(raw_spec)
+        if spec.get("loop") is None:
+            if default_loop is None:
+                raise ProductError("feature spec omits loop and no [loop].sequence is configured to default from")
+            spec["loop"] = [dict(entry) for entry in default_loop]
         feature = validate_feature(spec, roles=roles)
         if feature["pillar"] != pillar:
             raise ProductError(f"feature.pillar {feature['pillar']!r} does not match target pillar {pillar!r}")
