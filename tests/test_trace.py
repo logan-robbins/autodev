@@ -495,3 +495,53 @@ def test_tokens_from_transcript_populate_step_finished_on_fold(tmp_path: Path) -
     node = next(n for n in view.nodes if n.step_id == "s")
     assert node.tokens == 325
     assert view.metrics["tokens"] == 325
+
+
+# --- I0: product level + document kind (deterministic company scaffold) -------
+
+
+def test_product_level_run_started_validates() -> None:
+    event = new_event(
+        "run_started",
+        run_id="pm-1",
+        role="product-manager",
+        node_ref={"level": "product"},
+        goal="bootstrap pillars from the vision",
+    )
+    assert event["node_ref"]["level"] == "product"
+
+
+def test_document_subagent_folds_to_a_document_stage() -> None:
+    event = trace.event_from_hook(
+        {"hook_event_name": "SubagentStart", "agent_type": "document", "agent_id": "tw", "tool_use_id": "t1"}
+    )
+    assert event is not None
+    assert event["kind"] == "document"
+
+
+def test_to_dag_folds_a_document_run_into_a_document_node() -> None:
+    events = [
+        new_event(
+            "run_started",
+            run_id="tw-1",
+            role="technical-writer",
+            node_ref={"level": "pillar", "pillar": "replay-engine"},
+            goal="document the shipped pillar",
+        ),
+        new_event(
+            "step_declared",
+            step_id="docs",
+            parent=None,
+            kind="document",
+            objective="write README + TECHNICAL",
+            inputs=[],
+            expects="",
+            done_when="",
+            agent="tw",
+        ),
+        new_event("step_started", step_id="docs", agent="tw", agent_type="document", provider="claude"),
+        new_event("step_finished", step_id="docs", status="done", output_artifacts=["README.md"], tokens=5),
+    ]
+    view = trace.to_dag(events)
+    assert [n.kind for n in view.nodes] == ["document"]
+    assert view.nodes[0].status == "done"

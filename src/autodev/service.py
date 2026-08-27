@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from autodev.config import ConfigError, ProjectConfig, load_project
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.pods import materialize
 from autodev.product import (
     ProductError,
     derive_phase,
@@ -70,7 +71,7 @@ def _project_payload(project: ProjectConfig) -> dict[str, Any]:
         "session_pattern": project.session_pattern,
         "bypass_permissions": project.bypass_permissions,
         "config_dirty": _descriptor_dirty(project),
-        "agents": [status.as_dict() for status in statuses(project, project.agents)],
+        "agents": [status.as_dict() for status in statuses(project, materialize(project))],
     }
 
 
@@ -82,15 +83,19 @@ def _config_payload(project: ProjectConfig) -> dict[str, Any]:
 
 
 def _product_payload(project: ProjectConfig) -> dict[str, Any]:
-    """Enumerate the tree (glob feature.json), grouping by pillar with derived phase."""
+    """Enumerate the tree (glob pillar.json/feature.json), grouping by pillar with
+    its meta (why/value/approval/docs), its materialised pod members, and each
+    feature's derived phase."""
     tree = enumerate_tree(project)
+    materialized = materialize(project)
     pillars = []
     for pillar in tree.pillars:
+        members = [{"id": agent.id, "provider": agent.provider} for agent in materialized if agent.pod == pillar.id]
         features = []
         for feature in pillar.features:
             phase, owner_role = derive_phase(feature)
             features.append({**feature, "phase": phase, "owner_role": owner_role})
-        pillars.append({"id": pillar.id, "features": features})
+        pillars.append({"id": pillar.id, "pillar": pillar.pillar, "members": members, "features": features})
     return {"pillars": pillars}
 
 
@@ -192,12 +197,20 @@ async function loadProduct(){{
   data.pillars.forEach(p=>p.features.forEach(f=>{{counts[f.phase]=(counts[f.phase]||0)+1;}}));
   document.getElementById('metrics').innerHTML=Object.keys(counts).sort().map(k=>
     `<div class="metric"><b>${{counts[k]}}</b><span class="muted">${{esc(k)}}</span></div>`).join('')||'<span class="muted">No features yet.</span>';
-  document.getElementById('product').innerHTML=data.pillars.map(p=>
-    `<div class="pillar"><h3>${{esc(p.id)}}</h3>${{p.features.map(f=>
+  document.getElementById('product').innerHTML=data.pillars.map(p=>{{
+    const meta=p.pillar||{{}};
+    const members=(p.members||[]).map(m=>`<span class="badge">${{esc(m.id)}} · ${{esc(m.provider)}}</span>`).join(' ')||'<span class="muted">no pod yet</span>';
+    return `<div class="pillar"><h3>${{esc(meta.name||p.id)}} `+
+      `<span class="badge ${{meta.approval}}">${{esc(meta.approval||'')}}</span> `+
+      `<span class="badge">docs: ${{esc(meta.docs||'pending')}}</span></h3>`+
+      `<div class="muted">${{esc(meta.why||'')}}</div>`+
+      `<div class="members">Pod: ${{members}}</div>`+
+      p.features.map(f=>
       `<div class="card"><div class="row"><div><b>${{esc(f.name)}}</b> `+
       `<span class="badge ${{f.phase}}">${{esc(f.phase)}}</span> ${{f.approval==='proposed'?'<span class="badge">proposed</span>':''}}</div>`+
       `<div>${{loopStrip(f.loop)}}<button onclick="drill('${{f.id}}')">Details</button></div></div>`+
-      `<div id="run-${{f.id}}" class="muted"></div></div>`).join('')}}</div>`).join('')||'<p class="muted">No pillars yet.</p>';
+      `<div id="run-${{f.id}}" class="muted"></div></div>`).join('')+`</div>`;
+  }}).join('')||'<p class="muted">No pillars yet.</p>';
 }}
 async function action(action, agent){{
   try{{await request(`/api/actions/${{action}}`,{{method:'POST',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{agents:[agent],send_goal:true}})}});await loadAgents();}}

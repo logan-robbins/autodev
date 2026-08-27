@@ -9,25 +9,33 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from autodev import __version__
 from autodev.config import (
+    DEFAULT_MAX_CONCURRENT,
     DESCRIPTOR_NAME,
     ConfigError,
+    LoopConfig,
     ProjectConfig,
     load_project,
 )
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.orchestrator import tick
+from autodev.podmemory import append_pod_memory, read_pod_memory
+from autodev.pods import pod_agent_id
 from autodev.policy import PolicyInput, decide
 from autodev.product import (
     ProductError,
     add_features,
+    add_pillars,
     decompose_feature,
     set_approval,
     set_leaf_status,
+    set_pillar_approval,
 )
 from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
@@ -40,6 +48,8 @@ from autodev.wizard import run_setup_wizard
 
 CHARTER_MAX_CONTEXT = 10_000
 POLICY_BLOCK_EXIT = 2
+CHARTER_MEMORY_ENTRIES = 20
+ORCHESTRATE_WATCH_INTERVAL = 5.0
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -208,12 +218,36 @@ def _trace_emit(run_id: str) -> int:
     return 0
 
 
+def _run_pillar(project_id: str, run_id: str) -> str | None:
+    """The pillar this run belongs to, read from its run_started node_ref."""
+    with contextlib.suppress(ConfigError, OSError):
+        for event in read_events(project_paths(project_id).runs / run_id):
+            if event.get("type") == "run_started":
+                pillar = event.get("node_ref", {}).get("pillar")
+                return pillar if isinstance(pillar, str) and pillar else None
+    return None
+
+
+def _recent_pod_memory(project_id: str, run_id: str) -> str:
+    """Recent pod-memory lines for this run's pillar, to prepend to the law."""
+    pillar = _run_pillar(project_id, run_id)
+    if not pillar:
+        return ""
+    entries = read_pod_memory(project_id, pillar)[-CHARTER_MEMORY_ENTRIES:]
+    if not entries:
+        return ""
+    lines = [f"- [{entry['kind']}] {entry['role']}: {entry['text']}" for entry in entries]
+    return "Recent pod memory (read before acting):\n" + "\n".join(lines) + "\n\n"
+
+
 def _charter_digest(run_id: str) -> int:
     """Print the run role's composed law as hook additionalContext (<=10k).
 
     Registered on SessionStart + UserPromptSubmit (A5a) so the durable law is
     re-injected from disk after every compaction and at every pass — the layer
-    that survives regardless of the append-system-prompt outcome (E-1).
+    that survives regardless of the append-system-prompt outcome (E-1). The
+    pillar's recent pod memory is prepended ahead of the law so "read before
+    acting" is automatic, all within the 10k budget.
     """
     raw = sys.stdin.read()
     event_name = "SessionStart"
@@ -230,8 +264,37 @@ def _charter_digest(run_id: str) -> int:
         law = read_role_law(project_id, role)
     except ConfigError:
         return 0
-    context = law[:CHARTER_MAX_CONTEXT]
+    context = (_recent_pod_memory(project_id, run_id) + law)[:CHARTER_MAX_CONTEXT]
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}))
+    return 0
+
+
+def _pod_remember(pillar: str, kind: str) -> int:
+    """Append one typed pod-memory entry from stdin (the `autodev pod remember` verb).
+
+    Resolves the project, role, and run from the session environment; the writing
+    agent id is derived deterministically from the role and pillar.
+    """
+    project_id = os.environ.get("AUTODEV_PROJECT")
+    role = os.environ.get("AUTODEV_ROLE")
+    run_id = os.environ.get("AUTODEV_RUN_ID")
+    if not project_id or not role or not run_id:
+        raise ConfigError(
+            "`autodev pod remember` requires AUTODEV_PROJECT, AUTODEV_ROLE, and AUTODEV_RUN_ID in the session environment"
+        )
+    text = sys.stdin.read().strip()
+    if not text:
+        raise ConfigError("`autodev pod remember` requires memory text on stdin")
+    seq = append_pod_memory(
+        project_id,
+        pillar,
+        role=role,
+        agent=pod_agent_id(role, pillar),
+        run_id=run_id,
+        kind=kind,
+        text=text,
+    )
+    print(f"remembered {kind} #{seq} for pod {pillar}")
     return 0
 
 
@@ -291,7 +354,13 @@ def _stdin_json_list(label: str) -> list:
 
 def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
     """Typed tree-authoring verbs (decision #3): schema-validated, atomic writes."""
-    if args.product_command == "add-features":
+    if args.product_command == "add-pillars":
+        paths = add_pillars(project, _stdin_json_list("pillars"))
+        print(f"wrote {len(paths)} pillar file(s)")
+    elif args.product_command == "set-pillar-approval":
+        path = set_pillar_approval(project, args.pillar, args.approval)
+        print(f"set pillar {args.pillar} approval to {args.approval} ({path})")
+    elif args.product_command == "add-features":
         paths = add_features(project, args.pillar, _stdin_json_list("features"))
         print(f"wrote {len(paths)} feature file(s) under pillar {args.pillar}")
     elif args.product_command == "decompose-feature":
@@ -305,6 +374,38 @@ def _product_verb(project: ProjectConfig, args: argparse.Namespace) -> int:
         print(f"set {args.feature} approval to {args.approval} ({path})")
     else:  # argparse required=True makes this unreachable.
         raise AssertionError(f"unhandled product command: {args.product_command}")
+    return 0
+
+
+def _orchestrate_limits(project: ProjectConfig) -> LoopConfig:
+    if project.loop is not None:
+        return project.loop
+    return LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=DEFAULT_MAX_CONCURRENT)
+
+
+def _orchestrate(project: ProjectConfig, *, watch: bool) -> int:
+    """Advance the product tree one tick (or repeatedly with --watch)."""
+    limits = _orchestrate_limits(project)
+
+    def once() -> None:
+        decisions = tick(project, limits=limits)
+        if not decisions:
+            print("no scheduling decisions")
+            return
+        for decision in decisions:
+            print(
+                f"{decision.level:8} {decision.node_id:24} {decision.role:16} "
+                f"{decision.action:12} {decision.agent or '-'}"
+            )
+
+    if watch:
+        try:
+            while True:
+                once()
+                time.sleep(ORCHESTRATE_WATCH_INTERVAL)
+        except KeyboardInterrupt:
+            return 0
+    once()
     return 0
 
 
@@ -344,6 +445,12 @@ def build_parser() -> argparse.ArgumentParser:
     charter_digest = charter_commands.add_parser("digest", help="print the role law as hook additionalContext")
     charter_digest.add_argument("--run", dest="run_id", required=True, help="run id the firing hook belongs to")
 
+    pod = subparsers.add_parser("pod", help="pod-scoped shared memory for a pillar's team")
+    pod_commands = pod.add_subparsers(dest="pod_command", required=True)
+    pod_remember = pod_commands.add_parser("remember", help="append one typed pod-memory entry (text on stdin)")
+    pod_remember.add_argument("--pillar", required=True)
+    pod_remember.add_argument("--kind", required=True, choices=["fact", "decision", "handoff"])
+
     policy = subparsers.add_parser("policy", help="enforce the per-role/kind PreToolUse policy")
     policy_commands = policy.add_subparsers(dest="policy_command", required=True)
     policy_check = policy_commands.add_parser("check", help="block a denied tool call (exit 2) from a hook payload")
@@ -351,6 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     product = subparsers.add_parser("product", help="author the product tree through typed, validated verbs")
     product_commands = product.add_subparsers(dest="product_command", required=True)
+    add_pillars_cmd = product_commands.add_parser("add-pillars", help="write pillar.json files (JSON array on stdin)")
+    _add_project_argument(add_pillars_cmd, required=True)
+    pillar_approval_cmd = product_commands.add_parser("set-pillar-approval", help="flip a pillar's approval gate")
+    _add_project_argument(pillar_approval_cmd, required=True)
+    pillar_approval_cmd.add_argument("--pillar", required=True)
+    pillar_approval_cmd.add_argument("--approval", required=True, choices=["proposed", "approved"])
     add_features_cmd = product_commands.add_parser(
         "add-features", help="write feature.json files (JSON array on stdin)"
     )
@@ -419,6 +532,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui = subparsers.add_parser("ui", help="run one project's configuration and agent UI")
     _add_project_argument(ui, required=True)
+
+    orchestrate = subparsers.add_parser("orchestrate", help="advance the product tree one scheduling tick")
+    _add_project_argument(orchestrate, required=True)
+    orchestrate.add_argument("--watch", action="store_true", help="keep ticking on an interval")
     return parser
 
 
@@ -439,6 +556,10 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
         if args.charter_command != "digest":
             raise AssertionError(f"unhandled charter command: {args.charter_command}")
         return _charter_digest(args.run_id)
+    if args.command == "pod":
+        if args.pod_command != "remember":
+            raise AssertionError(f"unhandled pod command: {args.pod_command}")
+        return _pod_remember(args.pillar, args.kind)
     if args.command == "policy":
         if args.policy_command != "check":
             raise AssertionError(f"unhandled policy command: {args.policy_command}")
@@ -490,6 +611,8 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
     if args.command == "ui":
         serve_project(project)
         return 0
+    if args.command == "orchestrate":
+        return _orchestrate(project, watch=args.watch)
     if args.command == "validate":
         _validate_base(project)
         summary = _project_summary(project)

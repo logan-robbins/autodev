@@ -23,7 +23,33 @@ SHAPE_PERSONA = {
         "into complete leaves, correct stale gates, and emit unmet depends_on edges as the next "
         "executable queue."
     ),
+    "document": (
+        "Work as a documentarian, last: read the verified source and the pod memory, then produce a "
+        "highly condensed, data-flow-first technical map — show the flow (a -> b -> c) before any "
+        "prose — stamped to the verified sha. Never edit source; if the source contradicts the "
+        "intent you were asked to document, report it rather than changing it."
+    ),
 }
+
+
+# The shared operating law embedded in every role's charter (the design's
+# "shared operator law"). It is deterministic text, appended by compose_law.
+OPERATOR_LAW = (
+    "Operating law (shared by every role):\n"
+    "- Contract-first, TDD/eval-driven: publish the interface and a red (failing) test before any "
+    "internals; red before green.\n"
+    "- State every unit as input -> output -> unit test -> integration test -> the one module it "
+    "lives in; a unit lives in exactly one module.\n"
+    "- One canonical path; fail fast on a missing prerequisite. No stub, fallback, or 'v2'.\n"
+    "- Clean the backlog after validation; drop proven-done leaves.\n"
+    "- Docs are written last, only after every leaf verifies."
+)
+
+# The read-before-act / write-after rule for pod-scoped shared memory.
+POD_MEMORY_RULE = (
+    "Pod memory: your pod's recent memory is prepended to this law (read it before acting); after "
+    "acting, record durable facts, decisions, and handoffs with `autodev pod remember`."
+)
 
 
 def _list(values: tuple[str, ...], *, empty: str = "none") -> str:
@@ -54,13 +80,16 @@ def compose_law(loop: LoopConfig | None, role: RoleConfig) -> str:
             )
         parts.append(f"- At most {loop.max_concurrent} role-instances run concurrently.")
     parts.append(
-        "Mutate the product tree only through the typed `autodev product` verbs (add-features, "
-        "decompose-feature, set-leaf-status); never hand-edit feature.json or leaf.json."
+        "Mutate the product tree only through the typed `autodev product` verbs (add-pillars, "
+        "add-features, decompose-feature, set-leaf-status); never hand-edit pillar.json, feature.json, "
+        "or leaf.json."
     )
     parts.append(
-        "Features you emit are `proposed`; the Orchestrator schedules downstream roles only after a "
-        "human approves them."
+        "Pillars and Features you emit are `proposed`; the Orchestrator schedules downstream roles "
+        "only after the operator approves them."
     )
+    parts.append(OPERATOR_LAW)
+    parts.append(POD_MEMORY_RULE)
     return "\n".join(parts)
 
 

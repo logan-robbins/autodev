@@ -10,17 +10,24 @@ from autodev.config import load_project
 from autodev.product import (
     ProductError,
     add_features,
+    add_pillars,
     decompose_feature,
     derive_phase,
     enumerate_tree,
     join_run,
     load_leaf,
+    load_product_vision,
+    product_json_path,
     set_approval,
     set_leaf_status,
     set_loop_state,
+    set_pillar_approval,
+    set_pillar_docs,
     set_run_ref,
     validate_feature,
     validate_leaf,
+    validate_pillar,
+    validate_product,
 )
 from autodev.state import project_paths
 from autodev.trace import new_event
@@ -141,6 +148,102 @@ def test_validate_leaf_rejects_unknown_key() -> None:
         validate_leaf(_leaf(priority="high"))
 
 
+# --- D0: pillar.json schema --------------------------------------------------
+
+
+def _pillar(**overrides) -> dict:
+    base = {
+        "id": "replay-engine",
+        "name": "Replay Engine",
+        "why": "the problem",
+        "value": "the value",
+        "goal": "the outcome",
+        "approval": "proposed",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_validate_pillar_normalises_valid_and_defaults_docs() -> None:
+    result = validate_pillar(_pillar())
+    assert result["id"] == "replay-engine"
+    assert result["approval"] == "proposed"
+    assert result["docs"] == "pending"  # optional, defaults pending
+
+
+def test_validate_pillar_rejects_unknown_key() -> None:
+    with pytest.raises(ProductError, match="unknown field"):
+        validate_pillar(_pillar(owner="pm"))
+
+
+def test_validate_pillar_rejects_bad_approval() -> None:
+    with pytest.raises(ProductError, match="pillar.approval"):
+        validate_pillar(_pillar(approval="maybe"))
+
+
+def test_validate_pillar_rejects_bad_docs() -> None:
+    with pytest.raises(ProductError, match="pillar.docs"):
+        validate_pillar(_pillar(docs="written"))
+
+
+def test_validate_pillar_rejects_missing_required() -> None:
+    payload = _pillar()
+    del payload["goal"]
+    with pytest.raises(ProductError, match="missing field"):
+        validate_pillar(payload)
+
+
+def test_validate_pillar_rejects_id_over_28_chars() -> None:
+    # 29 chars — one over the cap that keeps stamped pod ids within _ID_RE's 32.
+    with pytest.raises(ProductError, match="pillar.id"):
+        validate_pillar(_pillar(id="a" + "b" * 28))
+
+
+def test_validate_pillar_accepts_id_at_28_chars() -> None:
+    assert validate_pillar(_pillar(id="a" + "b" * 27))["id"] == "a" + "b" * 27
+
+
+def test_seeded_pillar_json_validates(product_tree: Path) -> None:
+    path = product_tree / "product" / "pillars" / "replay-engine" / "pillar.json"
+    pillar = validate_pillar(json.loads(path.read_text(encoding="utf-8")))
+    assert pillar["id"] == "replay-engine"
+    assert pillar["approval"] == "approved"
+
+
+# --- D0b: product.json vision seed -------------------------------------------
+
+
+def test_validate_product_normalises_valid() -> None:
+    result = validate_product({"vision": "build X for Y", "constraints": ["stdlib only"]})
+    assert result == {"vision": "build X for Y", "constraints": ["stdlib only"]}
+
+
+def test_validate_product_defaults_constraints_to_empty() -> None:
+    assert validate_product({"vision": "build X"})["constraints"] == []
+
+
+def test_validate_product_rejects_missing_vision() -> None:
+    with pytest.raises(ProductError, match="missing field"):
+        validate_product({"constraints": []})
+
+
+def test_validate_product_rejects_unknown_key() -> None:
+    with pytest.raises(ProductError, match="unknown field"):
+        validate_product({"vision": "x", "roadmap": []})
+
+
+def test_load_product_vision_reads_the_seed(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    vision = load_product_vision(project)
+    assert vision is not None
+    assert vision["vision"].startswith("Deterministic replay")
+    assert product_json_path(project).is_file()
+
+
+def test_load_product_vision_is_none_when_absent(project_repo: Path) -> None:
+    assert load_product_vision(load_project(project_repo)) is None
+
+
 def test_seeded_product_tree_validates_end_to_end(product_tree: Path) -> None:
     feature_files = sorted((product_tree / "product").rglob("feature.json"))
     assert len(feature_files) == 2
@@ -186,6 +289,58 @@ def test_enumerate_fails_fast_on_pillar_dir_mismatch(product_tree: Path) -> None
     feature = json.loads((book / "feature.json").read_text(encoding="utf-8"))
     feature["pillar"] = "some-other-pillar"
     (book / "feature.json").write_text(json.dumps(feature), encoding="utf-8")
+    with pytest.raises(ProductError, match="does not match directory"):
+        enumerate_tree(load_project(product_tree))
+
+
+# --- E2: enumeration keyed on pillar.json ------------------------------------
+
+
+def test_enumerate_carries_pillar_meta(product_tree: Path) -> None:
+    tree = enumerate_tree(load_project(product_tree))
+    pillar = tree.pillar("replay-engine")
+    assert pillar.pillar["approval"] == "approved"
+    assert pillar.pillar["docs"] == "pending"
+    assert pillar.pillar["why"].startswith("Operators cannot")
+
+
+def test_enumerate_shows_a_feature_less_pillar(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    add_pillars(
+        project,
+        [{"id": "cold-store", "name": "Cold Store", "why": "w", "value": "v", "goal": "g", "approval": "proposed"}],
+    )
+    tree = enumerate_tree(load_project(product_tree))
+    assert [p.id for p in tree.pillars] == ["cold-store", "replay-engine"]  # sorted
+    assert tree.pillar("cold-store").features == ()  # visible with zero features
+
+
+def test_enumerate_fails_fast_on_feature_without_pillar_json(product_tree: Path) -> None:
+    orphan = product_tree / "product" / "pillars" / "orphan" / "features" / "f" / "feature.json"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(
+        json.dumps(
+            {
+                "id": "f",
+                "pillar": "orphan",
+                "name": "F",
+                "approval": "proposed",
+                "loop": [{"role": "engineering", "s": "pending"}],
+                "run_ref": None,
+                "leaves": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ProductError, match="has no pillar.json"):
+        enumerate_tree(load_project(product_tree))
+
+
+def test_enumerate_fails_fast_on_pillar_id_dir_mismatch(product_tree: Path) -> None:
+    path = product_tree / "product" / "pillars" / "replay-engine" / "pillar.json"
+    pillar = json.loads(path.read_text(encoding="utf-8"))
+    pillar["id"] = "renamed"
+    path.write_text(json.dumps(pillar), encoding="utf-8")
     with pytest.raises(ProductError, match="does not match directory"):
         enumerate_tree(load_project(product_tree))
 
@@ -282,6 +437,81 @@ def test_join_run_embeds_live_run_and_unmet_edges(product_tree: Path, tmp_path: 
     _json.dumps(view.as_dict())
 
 
+# --- E1: add_pillars ---------------------------------------------------------
+
+
+def test_add_pillars_writes_valid_pillar_json(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    paths = add_pillars(
+        project,
+        [
+            {
+                "id": "fast-lane",
+                "name": "Fast Lane",
+                "why": "ingest is too slow",
+                "value": "sub-second ingest",
+                "goal": "p99 ingest under 1s",
+                "approval": "proposed",
+            }
+        ],
+    )
+    assert paths[0].is_file()
+    written = validate_pillar(json.loads(paths[0].read_text(encoding="utf-8")))
+    assert written["id"] == "fast-lane"
+    assert written["approval"] == "proposed"
+    assert written["docs"] == "pending"
+
+
+def test_add_pillars_writes_nothing_on_invalid_payload(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    good = {
+        "id": "good-pillar",
+        "name": "Good",
+        "why": "w",
+        "value": "v",
+        "goal": "g",
+        "approval": "proposed",
+    }
+    bad = {**good, "id": "bad-pillar", "approval": "maybe"}
+    with pytest.raises(ProductError):
+        add_pillars(project, [good, bad])
+    assert not (product_tree / "product" / "pillars" / "good-pillar").exists()
+
+
+# --- E3: set_pillar_approval / set_pillar_docs -------------------------------
+
+
+def _read_pillar(product_tree: Path, pillar: str) -> dict:
+    path = product_tree / "product" / "pillars" / pillar / "pillar.json"
+    return validate_pillar(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_set_pillar_approval_flips_field_atomically(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    set_pillar_approval(project, "replay-engine", "proposed")
+    assert _read_pillar(product_tree, "replay-engine")["approval"] == "proposed"
+    set_pillar_approval(project, "replay-engine", "approved")
+    assert _read_pillar(product_tree, "replay-engine")["approval"] == "approved"
+
+
+def test_set_pillar_docs_advances_checkpoint(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    set_pillar_docs(project, "replay-engine", "active")
+    assert _read_pillar(product_tree, "replay-engine")["docs"] == "active"
+
+
+def test_set_pillar_approval_rejects_bad_enum(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    with pytest.raises(ProductError, match="pillar approval"):
+        set_pillar_approval(project, "replay-engine", "maybe")
+
+
+def test_set_pillar_docs_rejects_unknown_pillar(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    with pytest.raises(ProductError, match="unknown pillar"):
+        set_pillar_docs(project, "ghost-pillar", "done")
+
+
 # --- B4: typed state-mutation actions ----------------------------------------
 
 
@@ -367,3 +597,53 @@ def test_set_loop_state_rejects_unknown_role(product_tree: Path) -> None:
     project = load_project(product_tree)
     with pytest.raises(ProductError, match="no role"):
         set_loop_state(project, "fast-ingest", "designer", "active")
+
+
+# --- E4: add_features defaults the loop from [loop].sequence ------------------
+
+
+def _company_project(product_tree: Path):
+    # product_tree already carries the company [loop]/[roles]/[pods] tables.
+    return load_project(product_tree)
+
+
+def _read_feature_json(product_tree: Path, pillar: str, feature_id: str) -> dict:
+    path = product_tree / "product" / "pillars" / pillar / "features" / feature_id / "feature.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_add_features_defaults_loop_to_the_sequence(product_tree: Path) -> None:
+    project = _company_project(product_tree)
+    add_features(
+        project,
+        "replay-engine",
+        [{"id": "cold-path", "pillar": "replay-engine", "name": "Cold path", "approval": "proposed", "leaves": []}],
+    )
+    written = _read_feature_json(product_tree, "replay-engine", "cold-path")
+    assert written["loop"] == [
+        {"role": "project-manager", "s": "pending"},
+        {"role": "engineering", "s": "pending"},
+        {"role": "project-manager", "s": "pending"},
+    ]
+    # PM/TW are pillar-level, never feature-loop entries.
+    assert not any(entry["role"] in {"product-manager", "technical-writer"} for entry in written["loop"])
+
+
+def test_add_features_preserves_an_explicit_loop(product_tree: Path) -> None:
+    project = _company_project(product_tree)
+    add_features(
+        project,
+        "replay-engine",
+        [
+            {
+                "id": "warm-path",
+                "pillar": "replay-engine",
+                "name": "Warm path",
+                "approval": "proposed",
+                "loop": [{"role": "engineering", "s": "active"}],
+                "leaves": [],
+            }
+        ],
+    )
+    written = _read_feature_json(product_tree, "replay-engine", "warm-path")
+    assert written["loop"] == [{"role": "engineering", "s": "active"}]

@@ -200,6 +200,115 @@ def test_rejects_bad_role_shape(project_repo: Path) -> None:
         load_project(project_repo)
 
 
+# --- D1: the document shape (technical-writer) -------------------------------
+
+
+def test_document_shape_role_loads(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        '\n[roles.technical-writer]\nshape = "document"\ncharter = "Own the pillar docs; run last."\n',
+    )
+    project = load_project(project_repo)
+    assert project.roles["technical-writer"].shape == "document"
+
+
+def test_unknown_shape_still_rejected_after_document_added(project_repo: Path) -> None:
+    _add_tables(project_repo, '\n[roles.designer]\nshape = "documentt"\ncharter = "typo"\n')
+    with pytest.raises(ConfigError, match="roles.designer.shape"):
+        load_project(project_repo)
+
+
+# --- D2: the [pods] template -------------------------------------------------
+
+_POD_TABLES = (
+    _SCHEMA_3_TABLES
+    + """
+[pods]
+[pods.members.product-manager]
+provider = "claude"
+[pods.members.engineering]
+provider = "codex"
+"""
+)
+
+
+def test_loads_pods_template(project_repo: Path) -> None:
+    _add_tables(project_repo, _POD_TABLES)
+    project = load_project(project_repo)
+    assert project.pods is not None
+    assert set(project.pods.members) == {"product-manager", "engineering"}
+    assert project.pods.members["engineering"].provider == "codex"
+    assert project.pods.members["product-manager"].model is None
+
+
+def test_pods_member_naming_undeclared_role_rejected(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        _SCHEMA_3_TABLES + '\n[pods]\n[pods.members.designer]\nprovider = "claude"\n',
+    )
+    with pytest.raises(ConfigError, match="pods.members.designer names an undeclared"):
+        load_project(project_repo)
+
+
+def test_pods_member_bad_provider_rejected(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        _SCHEMA_3_TABLES + '\n[pods]\n[pods.members.engineering]\nprovider = "gemini"\n',
+    )
+    with pytest.raises(ConfigError, match="pods.members.engineering.provider must be one of"):
+        load_project(project_repo)
+
+
+# --- D3: [[agents]] or [pods] required; empty write_roots allowed ------------
+
+_BASE_DESCRIPTOR = """schema_version = 3
+
+[project]
+id = "sample-project"
+name = "Sample Project"
+base_branch = "main"
+instructions = "One canonical path."
+context_roots = []
+verify_commands = []
+
+[runtime]
+session_pattern = "autodev-{project}-{agent}"
+ui_port = 8765
+bypass_permissions = false
+"""
+
+
+def _write_descriptor(project_repo: Path, body: str) -> None:
+    (project_repo / "autodev.toml").write_text(body, encoding="utf-8")
+
+
+def test_template_only_descriptor_loads(project_repo: Path) -> None:
+    _write_descriptor(
+        project_repo,
+        _BASE_DESCRIPTOR + _SCHEMA_3_TABLES + '\n[pods]\n[pods.members.engineering]\nprovider = "codex"\n',
+    )
+    project = load_project(project_repo)
+    assert project.agents == ()
+    assert project.pods is not None
+
+
+def test_descriptor_with_neither_agents_nor_pods_rejected(project_repo: Path) -> None:
+    _write_descriptor(project_repo, _BASE_DESCRIPTOR)
+    with pytest.raises(ConfigError, match="must declare at least one \\[\\[agents\\]\\] table or a \\[pods\\]"):
+        load_project(project_repo)
+
+
+def test_verb_only_agent_with_empty_write_roots_loads(project_repo: Path) -> None:
+    _write_descriptor(
+        project_repo,
+        _BASE_DESCRIPTOR
+        + '\n[[agents]]\nid = "pm"\nprovider = "claude"\npurpose = "Author the tree."\n'
+        + 'goal = "Expand pillars."\nwrite_roots = []\nread_roots = ["product/"]\n',
+    )
+    project = load_project(project_repo)
+    assert project.agent("pm").write_roots == ()
+
+
 def test_rejects_loop_sequence_entry_without_role(project_repo: Path) -> None:
     _add_tables(
         project_repo,

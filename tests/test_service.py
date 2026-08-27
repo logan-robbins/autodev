@@ -107,6 +107,42 @@ def test_api_product_enumerates_pillars_and_features_with_phase(product_ui) -> N
     assert features["certified-l3-book"]["loop"][2] == {"role": "engineering", "s": "active"}
 
 
+def test_api_product_includes_pillar_meta_and_pod_members(product_ui) -> None:
+    url, _token, _project = product_ui
+    with urlopen(f"{url}/api/product") as response:
+        payload = json.load(response)
+
+    pillar = payload["pillars"][0]
+    assert pillar["pillar"]["approval"] == "approved"
+    assert pillar["pillar"]["docs"] == "pending"
+    assert pillar["pillar"]["why"].startswith("Operators cannot")
+    member_ids = {m["id"] for m in pillar["members"]}
+    assert member_ids == {
+        "pm-replay-engine",
+        "pjm-replay-engine",
+        "eng-replay-engine",
+        "tw-replay-engine",
+    }
+
+
+def test_api_project_lists_materialised_pod_agents(product_ui) -> None:
+    url, _token, _project = product_ui
+    with urlopen(f"{url}/api/project") as response:
+        payload = json.load(response)
+    agent_ids = {a["agent"] for a in payload["agents"]}
+    assert "pm" in agent_ids  # the product-level bootstrap pm
+    assert "eng-replay-engine" in agent_ids  # a derived pod agent
+
+
+def test_dashboard_shows_pod_members_and_docs_badge(product_ui) -> None:
+    url, _token, _project = product_ui
+    with urlopen(f"{url}/") as response:
+        page = response.read().decode()
+    assert "p.members" in page  # pod members rendered per pillar
+    assert "docs:" in page  # docs badge
+    assert "Pod:" in page
+
+
 def test_api_feature_run_renders_dag_with_leaves_and_unmet_deps(product_ui) -> None:
     url, _token, _project = product_ui
     with urlopen(f"{url}/api/features/certified-l3-book/run") as response:

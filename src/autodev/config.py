@@ -16,7 +16,7 @@ SUPPORTED_PROVIDERS = frozenset({"codex", "claude"})
 DEFAULT_SESSION_PATTERN = "autodev-{project}-{agent}"
 DEFAULT_UI_PORT = 8765
 DEFAULT_MAX_CONCURRENT = 4
-ROLE_SHAPES = frozenset({"research", "contract-first", "reconcile"})
+ROLE_SHAPES = frozenset({"research", "contract-first", "reconcile", "document"})
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -59,6 +59,26 @@ class LoopConfig:
 
 
 @dataclass(frozen=True)
+class PodMember:
+    role: str
+    provider: str
+    model: str | None = None
+    effort: str | None = None
+
+
+@dataclass(frozen=True)
+class PodTemplate:
+    """The team shape stamped per pillar (contract C-P4).
+
+    A pod is *not* a list of agents; it is the set of roles a pillar gets, each
+    bound to a provider. Purpose/goal/write-roots/read-roots are derived per
+    pillar by :func:`autodev.pods.materialize`, never declared here.
+    """
+
+    members: dict[str, PodMember]
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     id: str
     name: str
@@ -75,6 +95,7 @@ class ProjectConfig:
     agents: tuple[AgentConfig, ...]
     loop: LoopConfig | None = None
     roles: dict[str, RoleConfig] = field(default_factory=dict)
+    pods: PodTemplate | None = None
 
     def agent(self, agent_id: str) -> AgentConfig:
         for agent in self.agents:
@@ -273,6 +294,37 @@ def _parse_loop(data: Any, roles: dict[str, RoleConfig]) -> LoopConfig:
     return LoopConfig(sequence=sequence, reenter_product_manager_when=reenter, max_concurrent=max_concurrent)
 
 
+def _parse_pods(data: Any, roles: dict[str, RoleConfig]) -> PodTemplate:
+    table = _table(data, "[pods]")
+    unknown = sorted(set(table) - {"members"})
+    if unknown:
+        raise ConfigError(f"[pods] has unknown field(s): {', '.join(unknown)}")
+    members_data = _table(table.get("members", {}), "[pods.members]")
+    if not members_data:
+        raise ConfigError("[pods.members] must declare at least one member")
+    members: dict[str, PodMember] = {}
+    for raw_role, raw in members_data.items():
+        role_id = _id(raw_role, f"pods.members.{raw_role}")
+        if role_id not in roles:
+            raise ConfigError(f"pods.members.{role_id} names an undeclared [roles.*]")
+        member_table = _table(raw, f"[pods.members.{role_id}]")
+        member_unknown = sorted(set(member_table) - {"provider", "model", "effort"})
+        if member_unknown:
+            raise ConfigError(f"[pods.members.{role_id}] has unknown field(s): {', '.join(member_unknown)}")
+        provider = _nonempty_string(member_table.get("provider"), f"pods.members.{role_id}.provider")
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ConfigError(
+                f"pods.members.{role_id}.provider must be one of {', '.join(sorted(SUPPORTED_PROVIDERS))}"
+            )
+        members[role_id] = PodMember(
+            role=role_id,
+            provider=provider,
+            model=_optional_string(member_table.get("model"), f"pods.members.{role_id}.model"),
+            effort=_optional_string(member_table.get("effort"), f"pods.members.{role_id}.effort"),
+        )
+    return PodTemplate(members=members)
+
+
 def load_project(value: str | Path | None = None, *, cwd: Path | None = None) -> ProjectConfig:
     descriptor = descriptor_path(value, cwd=cwd)
     try:
@@ -318,9 +370,9 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
             effort=_optional_string(raw.get("effort"), f"providers.{provider_name}.effort"),
         )
 
-    raw_agents = data.get("agents")
-    if not isinstance(raw_agents, list) or not raw_agents:
-        raise ConfigError("at least one [[agents]] table is required")
+    raw_agents = data.get("agents", [])
+    if not isinstance(raw_agents, list):
+        raise ConfigError("[[agents]] must be a list of tables")
     agents: list[AgentConfig] = []
     seen_ids: set[str] = set()
     for index, value in enumerate(raw_agents):
@@ -339,7 +391,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
                 provider=provider,
                 purpose=_nonempty_string(raw.get("purpose"), f"agents[{index}].purpose"),
                 goal=_nonempty_string(raw.get("goal"), f"agents[{index}].goal"),
-                write_roots=_roots(raw.get("write_roots"), f"agents[{index}].write_roots", allow_empty=False),
+                write_roots=_roots(raw.get("write_roots", []), f"agents[{index}].write_roots", allow_empty=True),
                 read_roots=_roots(raw.get("read_roots", []), f"agents[{index}].read_roots"),
                 pod=_id(pod, f"agents[{index}].pod") if pod is not None else None,
             )
@@ -352,6 +404,9 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
 
     roles = _parse_roles(data.get("roles", {}))
     loop = _parse_loop(data["loop"], roles) if "loop" in data else None
+    pods = _parse_pods(data["pods"], roles) if "pods" in data else None
+    if not result_agents and pods is None:
+        raise ConfigError("a descriptor must declare at least one [[agents]] table or a [pods] template")
     return ProjectConfig(
         id=project_id,
         name=name,
@@ -368,4 +423,5 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         agents=result_agents,
         loop=loop,
         roles=roles,
+        pods=pods,
     )

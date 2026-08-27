@@ -6,6 +6,7 @@ from autodev.config import ConfigError, load_project
 from autodev.state import (
     Registry,
     autodev_home,
+    pod_memory_path,
     project_paths,
     read_role_law,
     write_role_law,
@@ -41,6 +42,18 @@ def test_project_paths_expose_runs_directory(tmp_path: Path) -> None:
     paths = project_paths("acme", home=tmp_path / "state")
     assert paths.runs == paths.home / "runs"
     assert paths.runs.parent == paths.home
+
+
+def test_project_paths_expose_pods_directory(tmp_path: Path) -> None:
+    paths = project_paths("acme", home=tmp_path / "state")
+    assert paths.pods == paths.home / "pods"
+
+
+def test_pod_memory_path_is_per_pillar_jsonl(tmp_path: Path) -> None:
+    home = tmp_path / "state"
+    path = pod_memory_path("acme", "replay-engine", home=home)
+    assert path == project_paths("acme", home=home).pods / "replay-engine" / "memory.jsonl"
+    assert home in path.parents  # outside any worktree
 
 
 def test_role_law_round_trips_at_mode_0600(tmp_path: Path) -> None:

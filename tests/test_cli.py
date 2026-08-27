@@ -7,6 +7,7 @@ from pathlib import Path
 
 from autodev.cli import build_parser, main
 from autodev.config import load_project
+from autodev.podmemory import read_pod_memory
 from autodev.state import Registry, project_paths, write_role_law
 from autodev.trace import emit, new_event, read_events
 from autodev.wizard import WizardResult
@@ -104,6 +105,45 @@ def test_charter_survives_a_forced_compaction(tmp_path: Path, monkeypatch, capsy
 
     assert "CHARTER-LAW" in digest_once("SessionStart")  # initial session
     assert "CHARTER-LAW" in digest_once("SessionStart")  # after a forced compaction
+
+
+def test_charter_digest_prepends_recent_pod_memory(tmp_path: Path, monkeypatch, capsys) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    write_role_law("sample-project", "engineering", "CHARTER: red tests before internals.", home=state)
+    # the run knows its pillar via run_started.node_ref.
+    run_dir = project_paths("sample-project", home=state).runs / "book-7"
+    emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    from autodev.podmemory import append_pod_memory
+
+    append_pod_memory(
+        "sample-project",
+        "replay-engine",
+        role="project-manager",
+        agent="pjm-replay-engine",
+        run_id="book-6",
+        kind="handoff",
+        text="store leaf is ready for engineering",
+        home=state,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart"})))
+
+    assert main(["charter", "digest", "--run", "book-7"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "store leaf is ready for engineering" in context
+    # the memory line comes ahead of the role law.
+    assert context.index("store leaf is ready") < context.index("CHARTER: red tests")
 
 
 def test_charter_digest_without_role_env_is_silent(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -219,11 +259,69 @@ def test_product_cli_set_leaf_status_and_approval(product_tree: Path, tmp_path: 
     assert enumerate_tree(project).feature("fast-ingest")["approval"] == "approved"
 
 
+def test_product_cli_add_pillars_and_set_pillar_approval(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    pillars = [
+        {"id": "cold-store", "name": "Cold Store", "why": "w", "value": "v", "goal": "g", "approval": "proposed"}
+    ]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(pillars)))
+    assert main(["product", "add-pillars", str(product_tree)]) == 0
+
+    assert (
+        main(["product", "set-pillar-approval", str(product_tree), "--pillar", "cold-store", "--approval", "approved"])
+        == 0
+    )
+
+    from autodev.product import enumerate_tree
+
+    tree = enumerate_tree(load_project(product_tree))
+    assert tree.pillar("cold-store").pillar["approval"] == "approved"
+
+
 def test_product_cli_rejects_invalid_payload(product_tree: Path, tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([{"id": "x", "pillar": "replay-engine"}])))
     assert main(["product", "add-features", str(product_tree), "--pillar", "replay-engine"]) == 1
     assert "autodev:" in capsys.readouterr().err
+
+
+def test_pod_remember_appends_one_entry_from_stdin(tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    monkeypatch.setenv("AUTODEV_RUN_ID", "book-7")
+    monkeypatch.setattr("sys.stdin", io.StringIO("the rate-limit contract is frozen"))
+
+    assert main(["pod", "remember", "--pillar", "replay-engine", "--kind", "fact"]) == 0
+
+    entries = read_pod_memory("sample-project", "replay-engine", home=state)
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "fact"
+    assert entries[0]["text"] == "the rate-limit contract is frozen"
+    assert entries[0]["agent"] == "eng-replay-engine"  # derived from role + pillar
+    assert entries[0]["run_id"] == "book-7"
+
+
+def test_pod_remember_requires_session_env(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("AUTODEV_PROJECT", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO("orphan note"))
+    assert main(["pod", "remember", "--pillar", "replay-engine", "--kind", "fact"]) == 1
+    assert "AUTODEV_PROJECT" in capsys.readouterr().err
+
+
+def test_orchestrate_runs_one_tick_and_schedules_pm(bootstrap_repo: Path, tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    launched: list[object] = []
+    # a fake launcher so the tick schedules without touching tmux/providers.
+    monkeypatch.setattr("autodev.orchestrator._default_launch", lambda _p, d: launched.append(d))
+
+    assert main(["orchestrate", str(bootstrap_repo)]) == 0
+
+    out = capsys.readouterr().out
+    assert "product" in out and "product-manager" in out and "scheduled" in out and "pm" in out
+    assert [d.agent for d in launched] == ["pm"]
 
 
 def test_setup_command_accepts_optional_project_path() -> None:

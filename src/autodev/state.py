@@ -31,6 +31,7 @@ class ProjectPaths:
     logs: Path
     runs: Path
     laws: Path
+    pods: Path
 
 
 def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
@@ -41,11 +42,21 @@ def project_paths(project_id: str, *, home: Path | None = None) -> ProjectPaths:
         logs=root / "logs",
         runs=root / "runs",
         laws=root / "laws",
+        pods=root / "pods",
     )
 
 
 def role_law_path(project_id: str, role: str, *, home: Path | None = None) -> Path:
     return project_paths(project_id, home=home).laws / f"{role}.md"
+
+
+def pod_memory_path(project_id: str, pillar: str, *, home: Path | None = None) -> Path:
+    """The append-only pod-memory log for one pillar, outside any worktree.
+
+    Live shared execution state (not durable intent), so it lives under
+    AUTODEV_HOME beside runs/laws — never in the managed repo.
+    """
+    return project_paths(project_id, home=home).pods / pillar / "memory.jsonl"
 
 
 def write_role_law(project_id: str, role: str, content: str, *, home: Path | None = None) -> Path:
