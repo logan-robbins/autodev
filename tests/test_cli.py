@@ -107,6 +107,45 @@ def test_charter_survives_a_forced_compaction(tmp_path: Path, monkeypatch, capsy
     assert "CHARTER-LAW" in digest_once("SessionStart")  # after a forced compaction
 
 
+def test_charter_digest_prepends_recent_pod_memory(tmp_path: Path, monkeypatch, capsys) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    write_role_law("sample-project", "engineering", "CHARTER: red tests before internals.", home=state)
+    # the run knows its pillar via run_started.node_ref.
+    run_dir = project_paths("sample-project", home=state).runs / "book-7"
+    emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    from autodev.podmemory import append_pod_memory
+
+    append_pod_memory(
+        "sample-project",
+        "replay-engine",
+        role="project-manager",
+        agent="pjm-replay-engine",
+        run_id="book-6",
+        kind="handoff",
+        text="store leaf is ready for engineering",
+        home=state,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart"})))
+
+    assert main(["charter", "digest", "--run", "book-7"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "store leaf is ready for engineering" in context
+    # the memory line comes ahead of the role law.
+    assert context.index("store leaf is ready") < context.index("CHARTER: red tests")
+
+
 def test_charter_digest_without_role_env_is_silent(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("AUTODEV_PROJECT", raising=False)

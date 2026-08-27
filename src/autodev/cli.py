@@ -21,7 +21,7 @@ from autodev.config import (
 )
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
-from autodev.podmemory import append_pod_memory
+from autodev.podmemory import append_pod_memory, read_pod_memory
 from autodev.pods import pod_agent_id
 from autodev.policy import PolicyInput, decide
 from autodev.product import (
@@ -42,6 +42,7 @@ from autodev.wizard import run_setup_wizard
 
 CHARTER_MAX_CONTEXT = 10_000
 POLICY_BLOCK_EXIT = 2
+CHARTER_MEMORY_ENTRIES = 20
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -210,12 +211,36 @@ def _trace_emit(run_id: str) -> int:
     return 0
 
 
+def _run_pillar(project_id: str, run_id: str) -> str | None:
+    """The pillar this run belongs to, read from its run_started node_ref."""
+    with contextlib.suppress(ConfigError, OSError):
+        for event in read_events(project_paths(project_id).runs / run_id):
+            if event.get("type") == "run_started":
+                pillar = event.get("node_ref", {}).get("pillar")
+                return pillar if isinstance(pillar, str) and pillar else None
+    return None
+
+
+def _recent_pod_memory(project_id: str, run_id: str) -> str:
+    """Recent pod-memory lines for this run's pillar, to prepend to the law."""
+    pillar = _run_pillar(project_id, run_id)
+    if not pillar:
+        return ""
+    entries = read_pod_memory(project_id, pillar)[-CHARTER_MEMORY_ENTRIES:]
+    if not entries:
+        return ""
+    lines = [f"- [{entry['kind']}] {entry['role']}: {entry['text']}" for entry in entries]
+    return "Recent pod memory (read before acting):\n" + "\n".join(lines) + "\n\n"
+
+
 def _charter_digest(run_id: str) -> int:
     """Print the run role's composed law as hook additionalContext (<=10k).
 
     Registered on SessionStart + UserPromptSubmit (A5a) so the durable law is
     re-injected from disk after every compaction and at every pass — the layer
-    that survives regardless of the append-system-prompt outcome (E-1).
+    that survives regardless of the append-system-prompt outcome (E-1). The
+    pillar's recent pod memory is prepended ahead of the law so "read before
+    acting" is automatic, all within the 10k budget.
     """
     raw = sys.stdin.read()
     event_name = "SessionStart"
@@ -232,7 +257,7 @@ def _charter_digest(run_id: str) -> int:
         law = read_role_law(project_id, role)
     except ConfigError:
         return 0
-    context = law[:CHARTER_MAX_CONTEXT]
+    context = (_recent_pod_memory(project_id, run_id) + law)[:CHARTER_MAX_CONTEXT]
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}))
     return 0
 
