@@ -21,6 +21,8 @@ from autodev.product import (
     set_approval,
     set_leaf_status,
     set_loop_state,
+    set_pillar_approval,
+    set_pillar_docs,
     set_run_ref,
     validate_feature,
     validate_leaf,
@@ -422,6 +424,40 @@ def test_add_pillars_writes_nothing_on_invalid_payload(product_tree: Path) -> No
     with pytest.raises(ProductError):
         add_pillars(project, [good, bad])
     assert not (product_tree / "product" / "pillars" / "good-pillar").exists()
+
+
+# --- E3: set_pillar_approval / set_pillar_docs -------------------------------
+
+
+def _read_pillar(product_tree: Path, pillar: str) -> dict:
+    path = product_tree / "product" / "pillars" / pillar / "pillar.json"
+    return validate_pillar(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_set_pillar_approval_flips_field_atomically(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    set_pillar_approval(project, "replay-engine", "proposed")
+    assert _read_pillar(product_tree, "replay-engine")["approval"] == "proposed"
+    set_pillar_approval(project, "replay-engine", "approved")
+    assert _read_pillar(product_tree, "replay-engine")["approval"] == "approved"
+
+
+def test_set_pillar_docs_advances_checkpoint(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    set_pillar_docs(project, "replay-engine", "active")
+    assert _read_pillar(product_tree, "replay-engine")["docs"] == "active"
+
+
+def test_set_pillar_approval_rejects_bad_enum(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    with pytest.raises(ProductError, match="pillar approval"):
+        set_pillar_approval(project, "replay-engine", "maybe")
+
+
+def test_set_pillar_docs_rejects_unknown_pillar(product_tree: Path) -> None:
+    project = load_project(product_tree)
+    with pytest.raises(ProductError, match="unknown pillar"):
+        set_pillar_docs(project, "ghost-pillar", "done")
 
 
 # --- B4: typed state-mutation actions ----------------------------------------

@@ -535,6 +535,31 @@ def set_approval(project: ProjectConfig, feature_id: str, approval: str) -> Path
     return _rewrite_feature(project, feature_id, {"approval": approval})
 
 
+def _pillar_path(project: ProjectConfig, pillar: str) -> Path:
+    return product_root(project) / pillar / "pillar.json"
+
+
+def _rewrite_pillar(project: ProjectConfig, pillar: str, changes: Mapping[str, Any]) -> Path:
+    path = _pillar_path(project, pillar)
+    if not path.is_file():
+        raise ProductError(f"unknown pillar {pillar!r}")
+    current = validate_pillar(json.loads(path.read_text(encoding="utf-8")))
+    _write_json(path, validate_pillar({**current, **changes}))
+    return path
+
+
+def set_pillar_approval(project: ProjectConfig, pillar: str, approval: str) -> Path:
+    """Flip a pillar's approval gate (the operator control plane, contract C-P1)."""
+    _enum(approval, APPROVALS, "pillar approval")
+    return _rewrite_pillar(project, pillar, {"approval": approval})
+
+
+def set_pillar_docs(project: ProjectConfig, pillar: str, state: str) -> Path:
+    """Advance a pillar's docs-last checkpoint (pending -> active -> done)."""
+    _enum(state, PILLAR_DOCS, "pillar docs state")
+    return _rewrite_pillar(project, pillar, {"docs": state})
+
+
 def set_loop_state(project: ProjectConfig, feature_id: str, role: str, state: str) -> Path:
     """Advance one role's loop checkpoint for a feature."""
     _enum(state, LOOP_STATES, "loop state")
