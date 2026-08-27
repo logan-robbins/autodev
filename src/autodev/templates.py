@@ -33,6 +33,19 @@ class DescriptorLoop:
     max_concurrent: int = 4
 
 
+@dataclass(frozen=True)
+class DescriptorPodMember:
+    role: str
+    provider: str
+    model: str | None = None
+    effort: str | None = None
+
+
+@dataclass(frozen=True)
+class DescriptorPods:
+    members: tuple[DescriptorPodMember, ...]
+
+
 def _toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -56,6 +69,7 @@ def render_full_descriptor(
     provider_settings: dict[str, dict[str, str | None]] | None = None,
     loop: DescriptorLoop | None = None,
     roles: tuple[DescriptorRole, ...] = (),
+    pods: DescriptorPods | None = None,
 ) -> str:
     lines = [
         f"schema_version = {SCHEMA_VERSION}",
@@ -92,6 +106,14 @@ def render_full_descriptor(
                 f"charter = {_toml_string(role.charter)}",
             ]
         )
+    if pods is not None:
+        lines.extend(["", "[pods]"])
+        for member in pods.members:
+            lines.extend(["", f"[pods.members.{member.role}]", f"provider = {_toml_string(member.provider)}"])
+            if member.model:
+                lines.append(f"model = {_toml_string(member.model)}")
+            if member.effort:
+                lines.append(f"effort = {_toml_string(member.effort)}")
     for provider in sorted(provider_settings or {}):
         settings = provider_settings[provider]
         if not any(settings.values()):
@@ -121,3 +143,82 @@ def render_full_descriptor(
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+# --- K4: the default company scaffold ----------------------------------------
+
+_COMPANY_ROLES = (
+    DescriptorRole(
+        id="product-manager",
+        shape="research",
+        charter=(
+            "Own the Pillar tier. Bootstrap pillars from product.json; expand an approved pillar into "
+            "proposed Features. Everything you emit is proposed until the operator approves."
+        ),
+    ),
+    DescriptorRole(
+        id="project-manager",
+        shape="reconcile",
+        charter=(
+            "Own the Feature shape and the backlog. Split into contract-anchored leaves + depends_on edges; "
+            "never approve a leaf whose gate needs another pod's unmerged work; clean proven-done leaves "
+            "after validation."
+        ),
+    ),
+    DescriptorRole(
+        id="engineering",
+        shape="contract-first",
+        charter=(
+            "Own the Task/leaf. Interfaces + RED tests before internals; implement your slice only; verify "
+            "green; commit per unit."
+        ),
+    ),
+    DescriptorRole(
+        id="technical-writer",
+        shape="document",
+        charter=(
+            "Own the pillar docs. Run only after every leaf verifies. Produce a condensed, data-flow-first "
+            "README + TECHNICAL map stamped to the verified sha. Never edit source."
+        ),
+    ),
+)
+
+_COMPANY_PODS = DescriptorPods(
+    members=(
+        DescriptorPodMember(role="product-manager", provider="claude"),
+        DescriptorPodMember(role="project-manager", provider="claude"),
+        DescriptorPodMember(role="engineering", provider="codex"),
+        DescriptorPodMember(role="technical-writer", provider="claude"),
+    )
+)
+
+
+def default_company_descriptor(*, project_id: str = "acme", name: str = "Acme") -> str:
+    """Emit the schema-3 company scaffold: four roles, the feature loop, and a full
+    pod template with no static ``[[agents]]`` (pods are derived per pillar)."""
+    return render_full_descriptor(
+        project_id=project_id,
+        name=name,
+        base_branch="main",
+        instructions=(
+            "One canonical path, fail fast, uv for Python. The product tree is authored only through autodev verbs."
+        ),
+        context_roots=("contracts/", "product/product.json"),
+        verify_commands=("uv run pytest",),
+        session_pattern="autodev-{project}-{agent}",
+        ui_port=8765,
+        bypass_permissions=False,
+        agents=(),
+        loop=DescriptorLoop(
+            sequence=("project-manager", "engineering", "project-manager"),
+            reenter_product_manager_when=("new-requirement", "queues-exhausted", "roadmap-contradiction"),
+            max_concurrent=4,
+        ),
+        roles=_COMPANY_ROLES,
+        pods=_COMPANY_PODS,
+    )
+
+
+def default_product_json(vision: str) -> str:
+    """Emit the cold-start ``product/product.json`` vision seed."""
+    return json.dumps({"vision": vision, "constraints": []}, indent=2) + "\n"
