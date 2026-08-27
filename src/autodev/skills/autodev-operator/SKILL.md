@@ -29,6 +29,26 @@ Fail immediately if the script cannot resolve a valid Autodev checkout. Do not i
 
 Use `autodev setup` when the user explicitly wants the human interactive wizard. When operating autonomously, author the same descriptor directly from repository evidence and validate it.
 
+## Start a New Product
+
+When the repository has no `autodev.toml`, first ask whether to **continue an existing product** (a repo that already has code and history) or **start a new product** (a fresh or near-empty repo that will grow from a vision).
+
+For **continue existing**, follow *Set Up a Repository* above: design non-overlapping workers from the code that exists.
+
+For **start new**, run the deterministic company scaffold:
+
+1. Ask the user: **"What do you want to build?"** Capture the answer as the product vision.
+2. Write the default schema-3 company descriptor to `autodev.toml` at the Git root — four roles (`product-manager`, `project-manager`, `engineering`, `technical-writer`), the feature `[loop]`, and a `[pods]` template. This is the scaffold in [references/descriptor.md](references/descriptor.md); it declares the team *shape*, not the teams — pods are derived per pillar as pillars appear.
+3. Write the vision to `product/product.json` as `{ "vision": "…", "constraints": [ … ] }`.
+4. Commit **both** `autodev.toml` and `product/product.json` on the base branch before launching, so every agent worktree starts from the same contract and vision.
+5. Register the project (`autodev register`), then run `autodev doctor` and correct every failure.
+6. Start the loop with `autodev orchestrate <project>` (add `--watch` to keep ticking). On an empty tree with a vision, the first tick schedules a product-level Product Manager that proposes the first pillars.
+7. Approve intent at the boundaries: the operator approves each `pillar.json` (`autodev product set-pillar-approval <project> --pillar <p> --approval approved`) and each feature (`autodev product set-approval`). Nothing downstream of a pillar runs until it is approved; everything downstream of an approved feature runs autonomously.
+
+The org chart is deterministic: `Product → Pillar (Product Manager) → Feature (Pod) → Epic/Task (Engineers + Project Manager) → Docs (Technical Writer, last)`. Each pillar gets its own pod with shared pod memory; the Technical Writer runs only after every leaf in the pillar verifies.
+
+Tree mutations (`pillar.json`, `feature.json`, `leaf.json`, approval/loop/docs states) are authored **only** through the typed `autodev product` verbs, which write into the integration checkout as ordinary Git modifications. Review and commit them like any other change; never hand-edit tree JSON.
+
 ## Supervise Workers
 
 - Treat `autodev status <project> --json` as the primary runtime view. Use the configured tmux session names and persistent worker logs for diagnosis.

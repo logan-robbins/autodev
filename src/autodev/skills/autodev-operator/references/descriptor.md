@@ -48,20 +48,62 @@ max_concurrent = 4
 
 [roles.product-manager]
 shape = "research"
-charter = "Own a Pillar. Extract facts; rank recency x relevance; emit the Pillar's Features."
+charter = "Own the Pillar tier. Bootstrap pillars from product.json; expand an approved pillar into proposed Features."
 
 [roles.project-manager]
 shape = "reconcile"
-charter = "Own a Feature. Split into complete leaves; emit depends_on edges."
+charter = "Own the Feature backlog. Split into contract-anchored leaves + depends_on edges; clean proven-done leaves."
 
 [roles.engineering]
 shape = "contract-first"
-charter = "Own a Leaf. Interfaces + red tests before internals."
+charter = "Own the Task/leaf. Interfaces + red tests before internals; implement your slice only; verify green."
+
+[roles.technical-writer]
+shape = "document"
+charter = "Own the pillar docs. Run last, after every leaf verifies; produce a data-flow-first README + TECHNICAL map."
+
+[pods]
+[pods.members.product-manager]
+provider = "claude"
+[pods.members.project-manager]
+provider = "claude"
+[pods.members.engineering]
+provider = "codex"
+[pods.members.technical-writer]
+provider = "claude"
 ```
 
-- `[roles.<id>].shape` is one of `research`, `contract-first`, `reconcile`; `charter` is non-empty.
-- Every `[loop].sequence` entry must name a configured `[roles.*]`. `max_concurrent` is a positive integer.
-- Agent `pod` groups agents for role assignment; it uses the same id rules as agent ids.
+- `[roles.<id>].shape` is one of `research`, `contract-first`, `reconcile`, `document`; `charter` is non-empty. The `technical-writer` role uses shape `document` and runs docs-last.
+- Every `[loop].sequence` entry must name a configured `[roles.*]`. The feature loop is `project-manager → engineering → project-manager`; the Product Manager (pillar-level) and Technical Writer (docs-last) are **not** feature-loop entries. `max_concurrent` is a positive integer.
+- `[pods]` declares the **team shape**, not the teams: `[pods.members.<role>]` names a configured `[roles.*]` and binds it to a `provider` (`model`/`effort` optional). One pod is derived per pillar — `pm-<pillar>`, `pjm-<pillar>`, `eng-<pillar>`, `tw-<pillar>`, plus a product-level `pm` bootstrap — with disjoint write roots. The descriptor is never auto-mutated; pods appear as `pillar.json` files appear in the tree.
+- A descriptor must declare at least one `[[agents]]` table **or** a `[pods]` template. A verb-only role (PM/PjM) may have empty `write_roots`, since it authors only the tree through verbs.
+- Agent `pod` (on a static `[[agents]]`) groups agents for role assignment; it uses the same id rules as agent ids.
+
+## The product tree
+
+Durable product intent lives in JSON files authored **only** through `autodev product` verbs (never hand-edited):
+
+```jsonc
+// product/product.json — the cold-start vision seed (operator-authored at setup)
+{ "vision": "what we are building and for whom", "constraints": ["optional hard constraints"] }
+```
+
+```jsonc
+// product/pillars/<pillar>/pillar.json — a major product area (PM-owned, operator-gated)
+{
+  "id": "replay-engine",   // lowercase id, starts with a letter, <= 28 chars
+  "name": "Replay Engine",
+  "why": "the problem this area exists to solve",
+  "value": "the value proposition delivered",
+  "goal": "the observable outcome that means this pillar is done",
+  "approval": "proposed",  // proposed | approved  — the operator gate
+  "docs": "pending"        // pending | active | done — the docs-last checkpoint (optional)
+}
+```
+
+- A pillar id is capped at 28 characters so stamped pod ids (`pjm-<pillar>` / `eng-<pillar>`) stay within the 32-character id form.
+- Under a pillar, `features/<feature>/feature.json` is the enumeration unit and `features/<feature>/leaves/<leaf>/leaf.json` is the Task (an "Epic" is an optional `epic` label on sibling leaves, not a file tier).
+- The orchestrator gates on `approval` (pillar and feature) and drives docs-last from `docs`; nothing downstream of a pillar runs until it is approved.
 
 ## Constraints
 
