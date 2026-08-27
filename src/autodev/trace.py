@@ -33,9 +33,10 @@ EVENT_TYPES = frozenset(
 
 # A step's shape. ``tool`` is the fold-to-noise kind: such steps never become
 # DAG nodes, they only increment ``metrics.tool_calls`` (contract C-3, Layer 1).
-STEP_KINDS = frozenset({"plan", "search", "contract", "implement", "integrate", "reconcile", "tool"})
+STEP_KINDS = frozenset({"plan", "search", "contract", "implement", "integrate", "reconcile", "document", "tool"})
 
-_NODE_LEVELS = frozenset({"pillar", "feature", "leaf"})
+# ``product`` is the cold-start bootstrap level (a product-level PM pass).
+_NODE_LEVELS = frozenset({"product", "pillar", "feature", "leaf"})
 
 # Correlation keys allowed on any event (present only when the source has them).
 _COMMON_OPTIONAL = frozenset({"seq", "turn_id", "agent_id", "agent_type", "tool_use_id"})
@@ -395,6 +396,7 @@ _AGENT_TYPE_KIND = {
     "implement": "implement",
     "integrate": "integrate",
     "reconcile": "reconcile",
+    "document": "document",
 }
 
 _CORRELATION_KEYS = ("turn_id", "agent_id", "agent_type", "tool_use_id")
