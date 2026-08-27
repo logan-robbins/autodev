@@ -218,6 +218,47 @@ def test_unknown_shape_still_rejected_after_document_added(project_repo: Path) -
         load_project(project_repo)
 
 
+# --- D2: the [pods] template -------------------------------------------------
+
+_POD_TABLES = (
+    _SCHEMA_3_TABLES
+    + """
+[pods]
+[pods.members.product-manager]
+provider = "claude"
+[pods.members.engineering]
+provider = "codex"
+"""
+)
+
+
+def test_loads_pods_template(project_repo: Path) -> None:
+    _add_tables(project_repo, _POD_TABLES)
+    project = load_project(project_repo)
+    assert project.pods is not None
+    assert set(project.pods.members) == {"product-manager", "engineering"}
+    assert project.pods.members["engineering"].provider == "codex"
+    assert project.pods.members["product-manager"].model is None
+
+
+def test_pods_member_naming_undeclared_role_rejected(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        _SCHEMA_3_TABLES + '\n[pods]\n[pods.members.designer]\nprovider = "claude"\n',
+    )
+    with pytest.raises(ConfigError, match="pods.members.designer names an undeclared"):
+        load_project(project_repo)
+
+
+def test_pods_member_bad_provider_rejected(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        _SCHEMA_3_TABLES + '\n[pods]\n[pods.members.engineering]\nprovider = "gemini"\n',
+    )
+    with pytest.raises(ConfigError, match="pods.members.engineering.provider must be one of"):
+        load_project(project_repo)
+
+
 def test_rejects_loop_sequence_entry_without_role(project_repo: Path) -> None:
     _add_tables(
         project_repo,

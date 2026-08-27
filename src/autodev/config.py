@@ -59,6 +59,26 @@ class LoopConfig:
 
 
 @dataclass(frozen=True)
+class PodMember:
+    role: str
+    provider: str
+    model: str | None = None
+    effort: str | None = None
+
+
+@dataclass(frozen=True)
+class PodTemplate:
+    """The team shape stamped per pillar (contract C-P4).
+
+    A pod is *not* a list of agents; it is the set of roles a pillar gets, each
+    bound to a provider. Purpose/goal/write-roots/read-roots are derived per
+    pillar by :func:`autodev.pods.materialize`, never declared here.
+    """
+
+    members: dict[str, PodMember]
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     id: str
     name: str
@@ -75,6 +95,7 @@ class ProjectConfig:
     agents: tuple[AgentConfig, ...]
     loop: LoopConfig | None = None
     roles: dict[str, RoleConfig] = field(default_factory=dict)
+    pods: PodTemplate | None = None
 
     def agent(self, agent_id: str) -> AgentConfig:
         for agent in self.agents:
@@ -273,6 +294,37 @@ def _parse_loop(data: Any, roles: dict[str, RoleConfig]) -> LoopConfig:
     return LoopConfig(sequence=sequence, reenter_product_manager_when=reenter, max_concurrent=max_concurrent)
 
 
+def _parse_pods(data: Any, roles: dict[str, RoleConfig]) -> PodTemplate:
+    table = _table(data, "[pods]")
+    unknown = sorted(set(table) - {"members"})
+    if unknown:
+        raise ConfigError(f"[pods] has unknown field(s): {', '.join(unknown)}")
+    members_data = _table(table.get("members", {}), "[pods.members]")
+    if not members_data:
+        raise ConfigError("[pods.members] must declare at least one member")
+    members: dict[str, PodMember] = {}
+    for raw_role, raw in members_data.items():
+        role_id = _id(raw_role, f"pods.members.{raw_role}")
+        if role_id not in roles:
+            raise ConfigError(f"pods.members.{role_id} names an undeclared [roles.*]")
+        member_table = _table(raw, f"[pods.members.{role_id}]")
+        member_unknown = sorted(set(member_table) - {"provider", "model", "effort"})
+        if member_unknown:
+            raise ConfigError(f"[pods.members.{role_id}] has unknown field(s): {', '.join(member_unknown)}")
+        provider = _nonempty_string(member_table.get("provider"), f"pods.members.{role_id}.provider")
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ConfigError(
+                f"pods.members.{role_id}.provider must be one of {', '.join(sorted(SUPPORTED_PROVIDERS))}"
+            )
+        members[role_id] = PodMember(
+            role=role_id,
+            provider=provider,
+            model=_optional_string(member_table.get("model"), f"pods.members.{role_id}.model"),
+            effort=_optional_string(member_table.get("effort"), f"pods.members.{role_id}.effort"),
+        )
+    return PodTemplate(members=members)
+
+
 def load_project(value: str | Path | None = None, *, cwd: Path | None = None) -> ProjectConfig:
     descriptor = descriptor_path(value, cwd=cwd)
     try:
@@ -352,6 +404,7 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
 
     roles = _parse_roles(data.get("roles", {}))
     loop = _parse_loop(data["loop"], roles) if "loop" in data else None
+    pods = _parse_pods(data["pods"], roles) if "pods" in data else None
     return ProjectConfig(
         id=project_id,
         name=name,
@@ -368,4 +421,5 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         agents=result_agents,
         loop=loop,
         roles=roles,
+        pods=pods,
     )
