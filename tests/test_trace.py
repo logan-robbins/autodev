@@ -129,6 +129,61 @@ def test_read_events_missing_dir_is_empty(tmp_path: Path) -> None:
     assert read_events(tmp_path / "absent") == []
 
 
+def _escalated(**overrides) -> dict:
+    fields = {
+        "node_ref": {"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+        "role": "engineering",
+        "attempts": 2,
+        "reason": "budget exhausted",
+    }
+    fields.update(overrides)
+    return new_event("escalated", **fields)
+
+
+def test_escalated_event_validates_and_round_trips(tmp_path: Path) -> None:
+    assert "escalated" in trace.EVENT_TYPES
+    event = _escalated()
+    assert validate_event(event)["attempts"] == 2
+
+    run_dir = tmp_path / "runs" / "esc-1"
+    trace.emit(run_dir, event)
+    persisted = read_events(run_dir)
+    assert [e["type"] for e in persisted] == ["escalated"]
+    assert persisted[0]["reason"] == "budget exhausted"
+
+
+def test_escalated_event_rejects_missing_attempts() -> None:
+    with pytest.raises(TraceError, match="missing field"):
+        new_event(
+            "escalated",
+            node_ref={"level": "feature", "pillar": "p", "feature": "f"},
+            role="engineering",
+            reason="budget exhausted",
+        )
+
+
+def test_escalated_event_rejects_unknown_field() -> None:
+    with pytest.raises(TraceError, match="unknown field"):
+        _escalated(bogus=1)
+
+
+def test_escalated_event_rejects_non_integer_attempts() -> None:
+    with pytest.raises(TraceError, match="escalated.attempts must be an integer"):
+        _escalated(attempts="two")
+
+
+def test_to_dag_ignores_escalated_event(tmp_path: Path) -> None:
+    # An escalated event is a run-level signal, not a stage step: to_dag folds it to
+    # nothing and the existing verdict/nodes are unaffected.
+    run_dir = tmp_path / "runs" / "esc-fold"
+    trace.emit(run_dir, _eng_run_started())
+    trace.emit(run_dir, _escalated())
+    trace.emit(run_dir, new_event("run_finished", status="done"))
+    view = trace.to_dag(read_events(run_dir))
+    assert view.status == "done"
+    assert view.nodes == ()
+
+
 def test_emit_assigns_monotonic_seq(tmp_path: Path) -> None:
     run_dir = tmp_path / "runs" / "r1"
     first = trace.emit(run_dir, _run_started())

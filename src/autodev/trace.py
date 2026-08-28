@@ -28,6 +28,7 @@ EVENT_TYPES = frozenset(
         "step_finished",
         "run_finished",
         "phase_changed",
+        "escalated",
     }
 )
 
@@ -50,6 +51,7 @@ _REQUIRED: dict[str, frozenset[str]] = {
     "step_finished": frozenset({"step_id", "status", "output_artifacts", "tokens"}),
     "run_finished": frozenset({"status"}),
     "phase_changed": frozenset({"node_ref", "from", "to", "reason"}),
+    "escalated": frozenset({"node_ref", "role", "attempts", "reason"}),
 }
 
 # Optional fields per event type, beyond the common correlation keys.
@@ -61,6 +63,7 @@ _OPTIONAL: dict[str, frozenset[str]] = {
     "step_finished": frozenset({"gloss"}),
     "run_finished": frozenset({"output_artifact"}),
     "phase_changed": frozenset(),
+    "escalated": frozenset(),
 }
 
 
@@ -114,6 +117,8 @@ def validate_event(obj: Mapping[str, Any]) -> dict[str, Any]:
             raise TraceError("step_declared.inputs must be a list")
     if event_type == "step_finished" and not isinstance(obj["output_artifacts"], (list, tuple)):
         raise TraceError("step_finished.output_artifacts must be a list")
+    if event_type == "escalated" and (not isinstance(obj["attempts"], int) or isinstance(obj["attempts"], bool)):
+        raise TraceError("escalated.attempts must be an integer")
     return dict(obj)
 
 
