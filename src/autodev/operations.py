@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from autodev.config import AgentConfig, ConfigError, ProjectConfig
+from autodev.pods import materialize
 from autodev.sessions import (
     AgentStatus,
     agent_status,
@@ -14,14 +15,23 @@ from autodev.workspaces import ensure_workspace
 
 
 def select_agents(project: ProjectConfig, ids: list[str] | tuple[str, ...]) -> tuple[AgentConfig, ...]:
+    """Resolve agent ids against the one derived roster (``pods.materialize``).
+
+    The effective worker set is a pure function of the pillars on disk, so
+    ``ensure``/``status``/the UI all see exactly what the loop launches — never a
+    stale static ``[[agents]]`` list. Launching stays the loop's job
+    (``orchestrate``), where the ``max_concurrent`` cap lives.
+    """
+    roster = materialize(project)
     if not ids:
-        return project.agents
-    unknown = sorted(set(ids) - {agent.id for agent in project.agents})
+        return roster
+    known_ids = {agent.id for agent in roster}
+    unknown = sorted(set(ids) - known_ids)
     if unknown:
-        known = ", ".join(agent.id for agent in project.agents)
-        raise ConfigError(f"unknown agent(s): {', '.join(unknown)}; configured agents: {known}")
+        known = ", ".join(agent.id for agent in roster) or "(none materialized yet)"
+        raise ConfigError(f"unknown agent(s): {', '.join(unknown)}; available agents: {known}")
     requested = set(ids)
-    return tuple(agent for agent in project.agents if agent.id in requested)
+    return tuple(agent for agent in roster if agent.id in requested)
 
 
 def ensure_agents(
