@@ -16,6 +16,7 @@ SUPPORTED_PROVIDERS = frozenset({"codex", "claude"})
 DEFAULT_SESSION_PATTERN = "autodev-{project}-{agent}"
 DEFAULT_UI_PORT = 8765
 DEFAULT_MAX_CONCURRENT = 4
+DEFAULT_MAX_ATTEMPTS = 1
 ROLE_SHAPES = frozenset({"research", "contract-first", "reconcile", "document"})
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -56,6 +57,7 @@ class LoopConfig:
     sequence: tuple[str, ...]
     reenter_product_manager_when: tuple[str, ...]
     max_concurrent: int
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS  # per-feature self-retry budget; 0 = escalate on first failure
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,12 @@ def _ui_port(value: Any) -> int:
 def _positive_int(value: Any, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ConfigError(f"{label} must be a positive integer")
+    return value
+
+
+def _nonnegative_int(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ConfigError(f"{label} must be a non-negative integer")
     return value
 
 
@@ -282,7 +290,7 @@ def _parse_roles(data: Any) -> dict[str, RoleConfig]:
 
 def _parse_loop(data: Any, roles: dict[str, RoleConfig]) -> LoopConfig:
     table = _table(data, "[loop]")
-    unknown = sorted(set(table) - {"sequence", "reenter_product_manager_when", "max_concurrent"})
+    unknown = sorted(set(table) - {"sequence", "reenter_product_manager_when", "max_concurrent", "max_attempts"})
     if unknown:
         raise ConfigError(f"[loop] has unknown field(s): {', '.join(unknown)}")
     sequence = _string_list(table.get("sequence", []), "loop.sequence")
@@ -291,7 +299,13 @@ def _parse_loop(data: Any, roles: dict[str, RoleConfig]) -> LoopConfig:
             raise ConfigError(f"loop.sequence entry {role!r} is not a configured [roles.*]")
     reenter = _string_list(table.get("reenter_product_manager_when", []), "loop.reenter_product_manager_when")
     max_concurrent = _positive_int(table.get("max_concurrent", DEFAULT_MAX_CONCURRENT), "loop.max_concurrent")
-    return LoopConfig(sequence=sequence, reenter_product_manager_when=reenter, max_concurrent=max_concurrent)
+    max_attempts = _nonnegative_int(table.get("max_attempts", DEFAULT_MAX_ATTEMPTS), "loop.max_attempts")
+    return LoopConfig(
+        sequence=sequence,
+        reenter_product_manager_when=reenter,
+        max_concurrent=max_concurrent,
+        max_attempts=max_attempts,
+    )
 
 
 def _parse_pods(data: Any, roles: dict[str, RoleConfig]) -> PodTemplate:
