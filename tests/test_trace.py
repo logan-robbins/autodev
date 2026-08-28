@@ -303,6 +303,68 @@ def test_to_dag_engineering_contract_first_shape() -> None:
     assert integrate_node.status == "green"
 
 
+def _eng_run_started() -> dict:
+    return new_event(
+        "run_started",
+        run_id="eng-1",
+        role="engineering",
+        node_ref={"level": "feature", "pillar": "p", "feature": "f"},
+        goal="build",
+    )
+
+
+def test_to_dag_verify_red_sets_failed_status() -> None:
+    # A verify step is an *undeclared* red/green step_finished (event_from_hook folds
+    # a Bash verify command straight to it, never declaring a stage node). Its latest
+    # outcome is the run's verdict, overriding the Stop hook's hard-coded
+    # run_finished(done) — this is the trigger the escalation ladder keys off.
+    red = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0),
+        new_event("run_finished", status="done"),
+    ]
+    assert trace.to_dag(red).status == "failed"
+
+    green = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="green", output_artifacts=[], tokens=0),
+        new_event("run_finished", status="done"),
+    ]
+    assert trace.to_dag(green).status == "done"
+
+    # No verify ran: fall back to the run_finished status.
+    no_verify = [_eng_run_started(), new_event("run_finished", status="done")]
+    assert trace.to_dag(no_verify).status == "done"
+
+    # Unfinished run (a red verify but no run_finished yet): still running.
+    unfinished = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0),
+    ]
+    assert trace.to_dag(unfinished).status == "running"
+
+    # The latest verify wins: a red then a green re-run derives to done.
+    reran = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0),
+        new_event("step_finished", step_id="verify", status="green", output_artifacts=[], tokens=0),
+        new_event("run_finished", status="done"),
+    ]
+    assert trace.to_dag(reran).status == "done"
+
+
+def test_to_dag_declared_node_red_does_not_override_run_status() -> None:
+    # A *declared* stage node finishing red/green (a contract-first RED test) is a
+    # node status, never the verify verdict: the run stays "done" from run_finished.
+    events = [_eng_run_started()]
+    events += _step("integrate", "integrate")
+    events.append(_finish("integrate", status="red"))
+    events.append(new_event("run_finished", status="done"))
+    view = trace.to_dag(events)
+    assert view.status == "done"
+    assert next(n for n in view.nodes if n.step_id == "integrate").status == "red"
+
+
 def test_to_dag_folds_persisted_events_jsonl(tmp_path: Path) -> None:
     run_dir = tmp_path / "runs" / "pm-1"
     for event in _pm_research_events():

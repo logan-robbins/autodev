@@ -252,6 +252,8 @@ def to_dag(events: Iterable[Mapping[str, Any]]) -> RunView:
     role = ""
     node_ref: dict = {}
     run_status = "running"
+    finished = False
+    verify_verdict: str | None = None  # latest undeclared red/green: the verify outcome
     metrics = {"tool_calls": 0, "tokens": 0}
 
     nodes: dict[str, _WorkingNode] = {}
@@ -267,6 +269,7 @@ def to_dag(events: Iterable[Mapping[str, Any]]) -> RunView:
             node_ref = dict(event["node_ref"])
         elif kind == "run_finished":
             run_status = event["status"]
+            finished = True
         elif kind == "step_declared":
             step_id = event["step_id"]
             if event["kind"] == "tool":
@@ -310,6 +313,21 @@ def to_dag(events: Iterable[Mapping[str, Any]]) -> RunView:
                 node.tokens = tokens
                 node.gloss = event.get("gloss")
                 node.artifacts.extend(a for a in event.get("output_artifacts", []) if a not in node.artifacts)
+            elif event["status"] in ("red", "green"):
+                # An undeclared red/green step_finished is a verify outcome:
+                # event_from_hook folds a Bash verify command straight to a
+                # step_finished with no matching step_declared, so it never becomes
+                # a stage node. The latest such outcome is the run's verify verdict.
+                # A *declared* stage node finishing red/green (contract-first RED
+                # tests) takes the branch above and never touches the verdict.
+                verify_verdict = event["status"]
+
+    # The verify verdict is the run's fundamental pass/fail: once a run has
+    # finished, its latest verify outcome (red -> failed, green -> done) wins over
+    # the Stop hook's hard-coded run_finished status. With no verify recorded, the
+    # run_finished status stands; an unfinished run stays "running".
+    if finished and verify_verdict is not None:
+        run_status = "failed" if verify_verdict == "red" else "done"
 
     edges: list[tuple[str, str]] = []
     seen_edges: set[tuple[str, str]] = set()

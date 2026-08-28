@@ -13,6 +13,7 @@ from autodev.product import (
     set_approval,
     set_leaf_status,
     set_pillar_approval,
+    set_run_ref,
 )
 from autodev.state import project_paths, read_identity
 from autodev.trace import new_event, read_events
@@ -104,6 +105,103 @@ def test_tick_failed_run_blocks_and_does_not_advance(product_tree: Path, tmp_pat
     assert not all(e["s"] == "done" for e in feature["loop"])  # the loop is NOT shipped
     changed = [e for e in read_events(run_dir) if e["type"] == "phase_changed"]
     assert any(e["reason"] == "failed" and e["to"] == "blocked" for e in changed)
+
+
+def test_tick_blocks_on_a_red_verify_without_a_manual_failed_status(
+    product_tree: Path, tmp_path: Path, monkeypatch
+) -> None:
+    # U1 (integration): a live-shaped run whose only signal is a red verify step plus
+    # the Stop hook's hard-coded run_finished(done) — no manually-emitted
+    # run_finished(status="failed") — still derives to `failed`, so moment-1 blocks.
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    run_dir = project_paths(project.id).runs / "book-7"
+    trace.emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    trace.emit(run_dir, new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0))
+    trace.emit(run_dir, new_event("run_finished", status="done"))  # Stop hook: always "done"
+
+    decisions = tick(project, limits=_LIMITS, launch=_no_launch)
+    book = next(d for d in decisions if d.node_id == "certified-l3-book")
+    assert book.action == "blocked"  # the derived verify verdict, not a manual failed
+
+
+def _emit_verify(project, feature_id: str, pillar: str, run_id: str, outcome: str) -> None:
+    """Emit a live-shaped Engineering run: run_started + a verify step + Stop(done)."""
+    run_dir = project_paths(project.id).runs / run_id
+    trace.emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id=run_id,
+            role="engineering",
+            node_ref={"level": "feature", "pillar": pillar, "feature": feature_id},
+            goal="g",
+        ),
+    )
+    trace.emit(run_dir, new_event("step_finished", step_id="verify", status=outcome, output_artifacts=[], tokens=0))
+    trace.emit(run_dir, new_event("run_finished", status="done"))
+
+
+def _seed_eng_feature(project_root: Path, pillar_id: str, feature_id: str, *, leaf_verified: bool) -> None:
+    """One approved pillar with one approved feature whose loop is a single active
+    Engineering step and one leaf (verified or pending)."""
+    add_pillars(load_project(project_root), [_approved_pillar(pillar_id)])
+    add_features(
+        load_project(project_root),
+        pillar_id,
+        [_feature_spec(feature_id, pillar_id, approval="approved", loop=[{"role": "engineering", "s": "active"}])],
+    )
+    decompose_feature(
+        load_project(project_root),
+        feature_id,
+        [{"id": "core", "feature": feature_id, "status": "pending", "depends_on": []}],
+    )
+    set_run_ref(load_project(project_root), feature_id, f"{feature_id}-1")
+    if leaf_verified:
+        set_leaf_status(load_project(project_root), feature_id, "core", "verified")
+
+
+def test_completion_verdict_gates_docs_last_flow(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    """Coherence: the verify-green verdict (U1) is what "complete task" means, and it
+    gates BOTH loop advancement AND the docs-last flow. A red Engineering pass never
+    ships, so `_pillar_ready_for_docs` stays false and the Technical Writer is never
+    scheduled; only after the pass verifies green (feature shipped + leaves verified)
+    does the docs-last gate schedule tw-<pillar>."""
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    _seed_eng_feature(product_tree, "red-lane", "red-feat", leaf_verified=False)
+    _seed_eng_feature(product_tree, "green-lane", "green-feat", leaf_verified=True)
+    project = load_project(product_tree)
+
+    # Red pass: derives failed -> feature blocked, so docs stay gated (no TW).
+    _emit_verify(project, "red-feat", "red-lane", "red-feat-1", "red")
+    decisions = tick(load_project(product_tree), limits=_LIMITS, launch=_no_launch)
+    assert next(d for d in decisions if d.node_id == "red-feat").action == "blocked"
+    red_tw = next(d for d in decisions if d.node_id == "red-lane" and d.role == "technical-writer")
+    assert red_tw.action == "gated"  # a red pass never reaches the docs-last gate
+    assert not any(d.action == "scheduled" and d.role == "technical-writer" for d in decisions)
+    red_feat = enumerate_tree(load_project(product_tree)).feature("red-feat")
+    assert not all(e["s"] == "done" for e in red_feat["loop"])  # never shipped
+
+    # Green pass: derives done -> feature advances; next tick ships it, and only then
+    # does the docs-last gate schedule the Technical Writer.
+    _emit_verify(project, "green-feat", "green-lane", "green-feat-1", "green")
+    decisions = tick(load_project(product_tree), limits=_LIMITS, launch=_no_launch)
+    assert next(d for d in decisions if d.node_id == "green-feat").action == "advanced"
+
+    decisions = tick(load_project(product_tree), limits=_LIMITS, launch=_no_launch)
+    green_tw = next(d for d in decisions if d.node_id == "green-lane" and d.role == "technical-writer")
+    assert green_tw.action == "scheduled"
+    assert green_tw.agent == "tw-green-lane"
+    assert enumerate_tree(load_project(product_tree)).pillar("green-lane").pillar["docs"] == "active"
 
 
 def test_tick_blocked_feature_not_reported_shipped(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
