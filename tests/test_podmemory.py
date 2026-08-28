@@ -44,6 +44,15 @@ def test_append_rejects_bad_kind(tmp_path: Path) -> None:
         _append(tmp_path / "state", kind="rumor")
 
 
+def test_question_kind_appends_and_reads_back(tmp_path: Path) -> None:
+    home = tmp_path / "state"
+    seq = _append(home, kind="question", text="Engineering failed on feature f (attempt 1/1).")
+    assert seq == 1
+    entries = read_pod_memory("acme", "replay-engine", kinds=["question"], home=home)
+    assert [e["kind"] for e in entries] == ["question"]
+    assert entries[0]["text"].startswith("Engineering failed")
+
+
 def test_append_rejects_empty_text(tmp_path: Path) -> None:
     with pytest.raises(PodMemoryError, match="text must be a non-empty string"):
         _append(tmp_path / "state", text="   ")

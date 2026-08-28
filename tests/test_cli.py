@@ -146,6 +146,44 @@ def test_charter_digest_prepends_recent_pod_memory(tmp_path: Path, monkeypatch, 
     assert context.index("store leaf is ready") < context.index("CHARTER: red tests")
 
 
+def test_charter_digest_renders_a_question_line(tmp_path: Path, monkeypatch, capsys) -> None:
+    # A routed failure `question` flows into the digest exactly like any other kind,
+    # rendered `- [question] <role>: <text>` ahead of the role law.
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "project-manager")
+    write_role_law("sample-project", "project-manager", "CHARTER: own the backlog.", home=state)
+    run_dir = project_paths("sample-project", home=state).runs / "cold-1"
+    emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id="cold-1",
+            role="project-manager",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    from autodev.podmemory import append_pod_memory
+
+    append_pod_memory(
+        "sample-project",
+        "replay-engine",
+        role="engineering",
+        agent="eng-replay-engine",
+        run_id="book-7",
+        kind="question",
+        text="Engineering failed on feature certified-l3-book (attempt 1/1). Re-shape the leaf.",
+        home=state,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart"})))
+
+    assert main(["charter", "digest", "--run", "cold-1"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "- [question] engineering: Engineering failed on feature certified-l3-book" in context
+
+
 def test_charter_digest_leads_with_the_agent_identity(tmp_path: Path, monkeypatch, capsys) -> None:
     # Unit 4e: with AUTODEV_AGENT + a written identity, additionalContext leads with
     # the fixed identity, ahead of the pod memory and the role law.
@@ -352,6 +390,20 @@ def test_pod_remember_appends_one_entry_from_stdin(tmp_path: Path, monkeypatch) 
     assert entries[0]["text"] == "the rate-limit contract is frozen"
     assert entries[0]["agent"] == "eng-replay-engine"  # derived from role + pillar
     assert entries[0]["run_id"] == "book-7"
+
+
+def test_pod_remember_accepts_question_kind(tmp_path: Path, monkeypatch) -> None:
+    # The `question` kind (the routed failure envelope) is a valid --kind choice.
+    state = tmp_path / "state"
+    monkeypatch.setenv("AUTODEV_HOME", str(state))
+    monkeypatch.setenv("AUTODEV_PROJECT", "sample-project")
+    monkeypatch.setenv("AUTODEV_ROLE", "engineering")
+    monkeypatch.setenv("AUTODEV_RUN_ID", "book-7")
+    monkeypatch.setattr("sys.stdin", io.StringIO("PjM: re-shape the store leaf so verify passes."))
+
+    assert main(["pod", "remember", "--pillar", "replay-engine", "--kind", "question"]) == 0
+    entries = read_pod_memory("sample-project", "replay-engine", kinds=["question"], home=state)
+    assert [e["kind"] for e in entries] == ["question"]
 
 
 def test_pod_remember_requires_session_env(tmp_path: Path, monkeypatch, capsys) -> None:

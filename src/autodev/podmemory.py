@@ -22,7 +22,10 @@ from typing import Any
 
 from autodev.state import pod_memory_path
 
-KINDS = frozenset({"fact", "decision", "handoff"})
+# "question" is a routed failure-question envelope: the escalation ladder appends
+# one when an Engineering pass fails so the re-activated Project Manager reads it
+# through the charter digest (same path as any other kind, no new plumbing).
+KINDS = frozenset({"fact", "decision", "handoff", "question"})
 _ENVELOPE_KEYS = ("seq", "ts", "pillar", "role", "agent", "run_id", "kind", "text")
 
 
