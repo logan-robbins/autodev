@@ -5,6 +5,7 @@ from pathlib import Path
 from autodev import orchestrator, trace
 from autodev.config import LoopConfig, load_project
 from autodev.orchestrator import ScheduleDecision, tick
+from autodev.podmemory import read_pod_memory
 from autodev.product import (
     add_features,
     add_pillars,
@@ -220,8 +221,11 @@ def test_tick_blocked_feature_not_reported_shipped(product_tree: Path, tmp_path:
     )
     trace.emit(run_dir, new_event("run_finished", status="failed"))
 
-    tick(project, limits=_LIMITS, launch=_no_launch)  # first tick blocks the feature
-    decisions = tick(load_project(product_tree), limits=_LIMITS, launch=_no_launch)  # second tick
+    # max_attempts=0 exhausts the retry budget immediately, so the ladder parks the
+    # feature blocked rather than self-retrying (U7 covers the escalation surface).
+    no_retry = LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=4, max_attempts=0)
+    tick(project, limits=no_retry, launch=_no_launch)  # first tick blocks the feature
+    decisions = tick(load_project(product_tree), limits=no_retry, launch=_no_launch)  # second tick
     book = next(d for d in decisions if d.node_id == "certified-l3-book")
     assert book.action == "blocked"  # a just-blocked feature stays blocked, never mislabeled shipped
 
@@ -504,3 +508,72 @@ def test_docs_last_gate_waits_for_verified_then_schedules_tw(product_tree: Path,
     # The finished docs run flips pillar docs pending -> ... -> done.
     tick(load_project(product_tree), limits=_LIMITS, launch=fake_launch)
     assert enumerate_tree(load_project(product_tree)).pillar("ship-lane").pillar["docs"] == "done"
+
+
+# --- U6: bounded self-retry (within budget) -----------------------------------
+
+
+def _block_certified_book(project) -> None:
+    """Drive certified-l3-book to blocked: a live-shaped red-verify run + one tick."""
+    _seed_run(project, "book-7", "certified-l3-book", status="done", verify="red")
+    tick(project, limits=_LIMITS, launch=_no_launch)  # eng -> blocked (moment 1)
+
+
+def test_drive_feature_self_retries_a_blocked_feature(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    _block_certified_book(project)
+
+    feature = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    assert [e["s"] for e in feature["loop"]] == ["done", "done", "blocked"]
+
+    launched: list[ScheduleDecision] = []
+    decisions, running = orchestrator._drive_feature(
+        load_project(product_tree), feature, _LIMITS, 0, lambda _p, d: launched.append(d)
+    )
+
+    retry = next(d for d in decisions if d.node_id == "certified-l3-book")
+    assert retry.action == "retried"
+    assert launched == []  # a self-retry launches nothing
+    assert running == 0  # no concurrency slot consumed
+
+    # the loop re-flows PjM..Eng back to pending (PM stays done, before the responder).
+    reflowed = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    assert [e["s"] for e in reflowed["loop"]] == ["done", "pending", "pending"]
+
+    # exactly one routed question lands in the pod's shared memory.
+    questions = read_pod_memory(project.id, "replay-engine", kinds=["question"])
+    assert len(questions) == 1
+    assert questions[0]["role"] == "engineering"
+    assert "Engineering failed on feature certified-l3-book (attempt 1/1)" in questions[0]["text"]
+
+    # the failed run carries a self-retry phase transition.
+    changed = [e for e in read_events(project_paths(project.id).runs / "book-7") if e["type"] == "phase_changed"]
+    assert any(e["reason"] == "self-retry" and e["from"] == "engineering" for e in changed)
+
+
+def test_ladder_retry_reschedules_pjm_then_eng(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    # Integration over ticks: Eng fails -> block -> self-retry -> PjM re-scheduled ->
+    # PjM done -> Eng re-scheduled, with exactly one routed question.
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    _seed_run(project, "book-7", "certified-l3-book", status="done", verify="red")  # initial failure
+
+    limits = LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=4, max_attempts=3)
+    launched: list[ScheduleDecision] = []
+
+    def fake_launch(proj, decision: ScheduleDecision) -> None:
+        launched.append(decision)
+        run_dir = project_paths(proj.id).runs / decision.run_id
+        if decision.role == "project-manager":
+            trace.emit(run_dir, new_event("run_finished", status="done"))
+        # a re-scheduled engineering run is left running (no outcome) so it does not
+        # re-block within this test's horizon.
+
+    for _ in range(6):
+        tick(load_project(product_tree), limits=limits, launch=fake_launch)
+
+    book_launches = [d.agent for d in launched if d.node_id == "certified-l3-book"]
+    assert book_launches == ["pjm-replay-engine", "eng-replay-engine"]
+    questions = read_pod_memory(project.id, "replay-engine", kinds=["question"])
+    assert len(questions) == 1  # one self-retry, one question
