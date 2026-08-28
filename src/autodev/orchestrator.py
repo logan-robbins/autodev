@@ -128,6 +128,32 @@ def _read_run(project: ProjectConfig, run_id: str) -> trace.RunView | None:
     return trace.to_dag(events)
 
 
+def failed_pass_count(project: ProjectConfig, feature_id: str) -> int:
+    """Count the feature's runs whose derived verdict is ``failed`` (U4).
+
+    The self-retry budget is spent against this count. It is *derived* from the
+    append-only trace — the durable store — never from a stored counter that
+    could drift from history. Each run is attributed by its
+    ``run_started.node_ref.feature`` (surfaced as ``RunView.node_ref``), so a run
+    belonging to another feature or a non-feature node is ignored. O(runs) per
+    call, the same fold-each-run shape as :func:`_count_running`.
+    """
+    runs_dir = project_paths(project.id).runs
+    if not runs_dir.is_dir():
+        return 0
+    count = 0
+    for run_dir in sorted(runs_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        events = trace.read_events(run_dir)
+        if not events:
+            continue
+        view = trace.to_dag(events)
+        if view.node_ref.get("feature") == feature_id and view.status == "failed":
+            count += 1
+    return count
+
+
 def _materialized_agent(project: ProjectConfig, agent_id: str):
     for agent in pods.materialize(project):
         if agent.id == agent_id:

@@ -226,6 +226,50 @@ def test_tick_blocked_feature_not_reported_shipped(product_tree: Path, tmp_path:
     assert book.action == "blocked"  # a just-blocked feature stays blocked, never mislabeled shipped
 
 
+def _seed_run(project, run_id: str, feature: str, *, status: str = "done", verify: str | None = None) -> None:
+    run_dir = project_paths(project.id).runs / run_id
+    trace.emit(
+        run_dir,
+        new_event(
+            "run_started",
+            run_id=run_id,
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": feature},
+            goal="g",
+        ),
+    )
+    if verify is not None:
+        trace.emit(run_dir, new_event("step_finished", step_id="verify", status=verify, output_artifacts=[], tokens=0))
+    trace.emit(run_dir, new_event("run_finished", status=status))
+
+
+def test_failed_pass_count_counts_only_this_features_failed_runs(
+    product_tree: Path, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+
+    assert orchestrator.failed_pass_count(project, "certified-l3-book") == 0  # empty runs dir
+
+    _seed_run(project, "f1", "certified-l3-book", status="failed")  # failed, this feature
+    _seed_run(project, "f2", "certified-l3-book", status="done")  # not failed
+    _seed_run(project, "f3", "fast-ingest", status="failed")  # failed, other feature
+    _seed_run(project, "f4", "certified-l3-book", status="done", verify="red")  # U1-derived failed
+
+    # only f1 (manual failed) and f4 (red verify) are this feature's failed runs.
+    assert orchestrator.failed_pass_count(project, "certified-l3-book") == 2
+    assert orchestrator.failed_pass_count(project, "fast-ingest") == 1
+
+
+def test_failed_pass_count_is_one_after_tick_blocks(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    _seed_run(project, "book-7", "certified-l3-book", status="done", verify="red")  # live-shaped red verify
+
+    tick(project, limits=_LIMITS, launch=_no_launch)  # moment-1 block on the derived failed
+    assert orchestrator.failed_pass_count(load_project(product_tree), "certified-l3-book") == 1
+
+
 def test_tick_respects_max_concurrent(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     project = load_project(product_tree)
