@@ -323,12 +323,14 @@ def _self_retry(
 
 
 def _drive_blocked(project: ProjectConfig, feature: dict, limits: LoopConfig, blocked_role: str) -> ScheduleDecision:
-    """The escalation ladder over a blocked feature: bounded self-retry, then park.
+    """The escalation ladder over a blocked feature: bounded self-retry, then escalate.
 
     While the derived ``failed_pass_count`` is within ``limits.max_attempts`` and a
     Project Manager precedes the blocked rung, route the failure back for one
-    self-retry (``retried``). Otherwise the budget is exhausted (or there is no PjM
-    responder): keep the feature ``blocked`` (U7 turns this into an escalation).
+    self-retry (``retried``). Otherwise — the budget is exhausted, or there is no PjM
+    responder to route to — emit an ``escalated`` event once and keep the feature
+    ``blocked`` for the operator (``escalated``). The event is the durable signal the
+    operator seat keys off; the transient ``blocked`` phase is not.
     """
     feature_id = feature["id"]
     run_id = _run_id_from_ref(feature["run_ref"])
@@ -342,7 +344,15 @@ def _drive_blocked(project: ProjectConfig, feature: dict, limits: LoopConfig, bl
         )
         return ScheduleDecision("feature", feature_id, blocked_role, run_id, "retried")
 
-    return ScheduleDecision("feature", feature_id, blocked_role, "", "blocked")
+    node_ref = {"level": "feature", "pillar": feature["pillar"], "feature": feature_id}
+    reason = "budget exhausted" if responder_index is not None else "no project-manager responder"
+    already = run_id and any(event.get("type") == "escalated" for event in trace.read_events(_run_dir(project, run_id)))
+    if run_id and not already:
+        trace.emit(
+            _run_dir(project, run_id),
+            trace.new_event("escalated", node_ref=node_ref, role=blocked_role, attempts=attempts, reason=reason),
+        )
+    return ScheduleDecision("feature", feature_id, blocked_role, run_id, "escalated")
 
 
 def _drive_feature(

@@ -206,6 +206,8 @@ def test_completion_verdict_gates_docs_last_flow(product_tree: Path, tmp_path: P
 
 
 def test_tick_blocked_feature_not_reported_shipped(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    # A budget-exhausted feature escalates and parks blocked — it is never mislabeled
+    # shipped (the intent this test has always guarded, now under the ladder).
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     project = load_project(product_tree)
     run_dir = project_paths(project.id).runs / "book-7"
@@ -221,13 +223,14 @@ def test_tick_blocked_feature_not_reported_shipped(product_tree: Path, tmp_path:
     )
     trace.emit(run_dir, new_event("run_finished", status="failed"))
 
-    # max_attempts=0 exhausts the retry budget immediately, so the ladder parks the
-    # feature blocked rather than self-retrying (U7 covers the escalation surface).
+    # max_attempts=0 exhausts the retry budget immediately: block, then escalate.
     no_retry = LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=4, max_attempts=0)
     tick(project, limits=no_retry, launch=_no_launch)  # first tick blocks the feature
-    decisions = tick(load_project(product_tree), limits=no_retry, launch=_no_launch)  # second tick
+    decisions = tick(load_project(product_tree), limits=no_retry, launch=_no_launch)  # second tick escalates
     book = next(d for d in decisions if d.node_id == "certified-l3-book")
-    assert book.action == "blocked"  # a just-blocked feature stays blocked, never mislabeled shipped
+    assert book.action == "escalated"  # never mislabeled shipped
+    feature = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    assert not all(e["s"] == "done" for e in feature["loop"])  # still not shipped
 
 
 def _seed_run(project, run_id: str, feature: str, *, status: str = "done", verify: str | None = None) -> None:
@@ -577,3 +580,92 @@ def test_ladder_retry_reschedules_pjm_then_eng(product_tree: Path, tmp_path: Pat
     assert book_launches == ["pjm-replay-engine", "eng-replay-engine"]
     questions = read_pod_memory(project.id, "replay-engine", kinds=["question"])
     assert len(questions) == 1  # one self-retry, one question
+
+
+# --- U7: escalation (budget exhausted) ----------------------------------------
+
+
+def _count_escalated_events(project) -> int:
+    runs = project_paths(project.id).runs
+    if not runs.is_dir():
+        return 0
+    return sum(
+        sum(1 for e in read_events(run_dir) if e["type"] == "escalated")
+        for run_dir in runs.iterdir()
+        if run_dir.is_dir()
+    )
+
+
+def test_drive_feature_escalates_over_budget_and_emits_once(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    _block_certified_book(project)  # eng blocked, failed_pass_count == 1
+
+    over_budget = LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=4, max_attempts=0)
+
+    feature = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    first, _ = orchestrator._drive_feature(load_project(product_tree), feature, over_budget, 0, _no_launch)
+    assert next(d for d in first if d.node_id == "certified-l3-book").action == "escalated"
+
+    # a second pass still reports escalated but does NOT re-emit the event.
+    feature = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    second, _ = orchestrator._drive_feature(load_project(product_tree), feature, over_budget, 0, _no_launch)
+    assert next(d for d in second if d.node_id == "certified-l3-book").action == "escalated"
+
+    assert _count_escalated_events(project) == 1  # guarded: emitted exactly once
+    escalated = [e for e in read_events(project_paths(project.id).runs / "book-7") if e["type"] == "escalated"]
+    assert escalated[0]["role"] == "engineering" and escalated[0]["attempts"] == 1
+
+
+def test_drive_feature_escalates_when_no_pjm_responder(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    # A loop with no Project Manager before the blocked rung escalates on the first
+    # failure even though the budget (max_attempts=1) is not yet exhausted.
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    _seed_eng_feature(product_tree, "solo-lane", "solo-feat", leaf_verified=False)  # loop = [engineering]
+    _emit_verify(project, "solo-feat", "solo-lane", "solo-feat-1", "red")
+    tick(load_project(product_tree), limits=_LIMITS, launch=_no_launch)  # eng -> blocked
+
+    feature = enumerate_tree(load_project(product_tree)).feature("solo-feat")
+    decisions, _ = orchestrator._drive_feature(load_project(product_tree), feature, _LIMITS, 0, _no_launch)
+    assert next(d for d in decisions if d.node_id == "solo-feat").action == "escalated"
+    escalated = [e for e in read_events(project_paths(project.id).runs / "solo-feat-1") if e["type"] == "escalated"]
+    assert escalated and escalated[0]["reason"] == "no project-manager responder"
+
+
+def test_ladder_max_attempts_one_retries_then_escalates(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    # The full ladder at max_attempts=1: fail -> retried (PjM scheduled, one question)
+    # -> fail -> escalated (one escalated event, feature blocked, never shipped).
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    _seed_run(project, "book-7", "certified-l3-book", status="done", verify="red")  # initial failure
+
+    limits = LoopConfig(sequence=(), reenter_product_manager_when=(), max_concurrent=4, max_attempts=1)
+    launched: list[ScheduleDecision] = []
+    actions: list[str] = []
+
+    def fake_launch(proj, decision: ScheduleDecision) -> None:
+        launched.append(decision)
+        run_dir = project_paths(proj.id).runs / decision.run_id
+        if decision.role == "project-manager":
+            trace.emit(run_dir, new_event("run_finished", status="done"))
+        elif decision.role == "engineering":  # every Engineering pass fails (red verify)
+            trace.emit(
+                run_dir, new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0)
+            )
+            trace.emit(run_dir, new_event("run_finished", status="done"))
+
+    for _ in range(8):
+        decisions = tick(load_project(product_tree), limits=limits, launch=fake_launch)
+        book = next((d for d in decisions if d.node_id == "certified-l3-book"), None)
+        if book is not None:
+            actions.append(book.action)
+
+    assert "retried" in actions and "escalated" in actions
+    assert actions.index("retried") < actions.index("escalated")  # retry before escalation
+    assert "shipped" not in actions  # never shipped
+    assert "pjm-replay-engine" in [d.agent for d in launched if d.node_id == "certified-l3-book"]
+    assert len(read_pod_memory(project.id, "replay-engine", kinds=["question"])) == 1  # one question
+    assert _count_escalated_events(project) == 1  # one escalated event
+    feature = enumerate_tree(load_project(product_tree)).feature("certified-l3-book")
+    assert feature["loop"][-1]["s"] == "blocked"  # parked blocked for the operator
