@@ -82,10 +82,26 @@ def _config_payload(project: ProjectConfig) -> dict[str, Any]:
     }
 
 
+def _feature_escalation(project: ProjectConfig, feature: dict[str, Any]) -> tuple[bool, int]:
+    """Read the feature's escalation state off its live run: (escalated, attempts).
+
+    The escalation ladder emits at most one ``escalated`` event into the failed run;
+    its ``attempts`` is the count at which the budget was exhausted. A feature with
+    no run, or a run with no escalated event, is not escalated."""
+    run_ref = feature.get("run_ref")
+    if not run_ref:
+        return False, 0
+    escalations = [e for e in read_events(project_paths(project.id).home / run_ref) if e.get("type") == "escalated"]
+    if not escalations:
+        return False, 0
+    latest = max(escalations, key=lambda e: int(e.get("seq", 0)))
+    return True, int(latest.get("attempts", 0))
+
+
 def _product_payload(project: ProjectConfig) -> dict[str, Any]:
     """Enumerate the tree (glob pillar.json/feature.json), grouping by pillar with
     its meta (why/value/approval/docs), its materialised pod members, and each
-    feature's derived phase."""
+    feature's derived phase plus its escalation flag/attempt count."""
     tree = enumerate_tree(project)
     materialized = materialize(project)
     pillars = []
@@ -94,7 +110,10 @@ def _product_payload(project: ProjectConfig) -> dict[str, Any]:
         features = []
         for feature in pillar.features:
             phase, owner_role = derive_phase(feature)
-            features.append({**feature, "phase": phase, "owner_role": owner_role})
+            escalated, attempts = _feature_escalation(project, feature)
+            features.append(
+                {**feature, "phase": phase, "owner_role": owner_role, "escalated": escalated, "attempts": attempts}
+            )
         pillars.append({"id": pillar.id, "pillar": pillar.pillar, "members": members, "features": features})
     return {"pillars": pillars}
 
@@ -152,6 +171,7 @@ main{{max-width:1100px;margin:36px auto;padding:0 24px}}h1{{font-size:30px;margi
 .row{{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}}
 .badge{{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;text-transform:capitalize;background:#eef1f5;color:#3a4653;border:1px solid #dbe0e6}}
 .badge.engineering{{background:#e7f0ff;color:#1d6fe0}}.badge.shipped{{background:#e6f6ec;color:#1a7f3c}}
+.badge.escalated{{background:#fdecea;color:#c0392b;border-color:#f5c6c2}}
 .loop span{{font:13px ui-monospace,monospace;margin-right:8px;color:#5a6675}}
 .loop .done{{color:#1a7f3c}}.loop .active{{color:#1d6fe0;font-weight:700}}.loop .blocked{{color:#c0392b}}
 .metrics{{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 2px}}.metric{{background:#eef1f5;border-radius:8px;padding:8px 14px}}
@@ -207,7 +227,8 @@ async function loadProduct(){{
       `<div class="members">Pod: ${{members}}</div>`+
       p.features.map(f=>
       `<div class="card"><div class="row"><div><b>${{esc(f.name)}}</b> `+
-      `<span class="badge ${{f.phase}}">${{esc(f.phase)}}</span> ${{f.approval==='proposed'?'<span class="badge">proposed</span>':''}}</div>`+
+      `<span class="badge ${{f.phase}}">${{esc(f.phase)}}</span> ${{f.approval==='proposed'?'<span class="badge">proposed</span>':''}} `+
+      `${{f.escalated?`<span class="badge escalated">escalated · ${{f.attempts}} attempt${{f.attempts===1?'':'s'}}</span>`:''}}</div>`+
       `<div>${{loopStrip(f.loop)}}<button onclick="drill('${{f.id}}')">Details</button></div></div>`+
       `<div id="run-${{f.id}}" class="muted"></div></div>`).join('')+`</div>`;
   }}).join('')||'<p class="muted">No pillars yet.</p>';

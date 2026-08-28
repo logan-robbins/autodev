@@ -11,7 +11,7 @@ import pytest
 
 from autodev import trace
 from autodev.config import load_project
-from autodev.service import _control_token, project_ui_handler
+from autodev.service import _control_token, _product_payload, project_ui_handler
 from autodev.state import project_paths
 from autodev.trace import new_event
 
@@ -141,6 +141,61 @@ def test_dashboard_shows_pod_members_and_docs_badge(product_ui) -> None:
     assert "p.members" in page  # pod members rendered per pillar
     assert "docs:" in page  # docs badge
     assert "Pod:" in page
+
+
+def _escalate(project, run_id: str, feature: str, attempts: int) -> None:
+    trace.emit(
+        project_paths(project.id).runs / run_id,
+        new_event(
+            "escalated",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": feature},
+            role="engineering",
+            attempts=attempts,
+            reason="budget exhausted",
+        ),
+    )
+
+
+def test_product_payload_flags_escalation(product_tree: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
+    project = load_project(product_tree)
+    # certified-l3-book points at runs/book-7; append an escalated event to it.
+    trace.emit(
+        project_paths(project.id).runs / "book-7",
+        new_event(
+            "run_started",
+            run_id="book-7",
+            role="engineering",
+            node_ref={"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+            goal="g",
+        ),
+    )
+    _escalate(project, "book-7", "certified-l3-book", 3)
+
+    features = {f["id"]: f for f in _product_payload(project)["pillars"][0]["features"]}
+    assert features["certified-l3-book"]["escalated"] is True
+    assert features["certified-l3-book"]["attempts"] == 3
+    assert features["fast-ingest"]["escalated"] is False  # no run -> not escalated
+    assert features["fast-ingest"]["attempts"] == 0
+
+
+def test_api_product_marks_an_escalated_feature(product_ui) -> None:
+    url, _token, project = product_ui
+    _escalate(project, "book-7", "certified-l3-book", 2)  # book-7 is the live run of certified-l3-book
+    with urlopen(f"{url}/api/product") as response:
+        payload = json.load(response)
+    features = {f["id"]: f for f in payload["pillars"][0]["features"]}
+    assert features["certified-l3-book"]["escalated"] is True
+    assert features["certified-l3-book"]["attempts"] == 2
+    assert features["fast-ingest"]["escalated"] is False
+
+
+def test_dashboard_renders_the_escalated_badge(product_ui) -> None:
+    url, _token, _project = product_ui
+    with urlopen(f"{url}/") as response:
+        page = response.read().decode()
+    assert "f.escalated" in page  # the escalated badge is conditionally rendered
+    assert "badge escalated" in page
 
 
 def test_api_feature_run_renders_dag_with_leaves_and_unmet_deps(product_ui) -> None:
