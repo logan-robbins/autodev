@@ -487,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     pod_commands = pod.add_subparsers(dest="pod_command", required=True)
     pod_remember = pod_commands.add_parser("remember", help="append one typed pod-memory entry (text on stdin)")
     pod_remember.add_argument("--pillar", required=True)
-    pod_remember.add_argument("--kind", required=True, choices=["fact", "decision", "handoff"])
+    pod_remember.add_argument("--kind", required=True, choices=["fact", "decision", "handoff", "question"])
 
     policy = subparsers.add_parser("policy", help="enforce the per-role/kind PreToolUse policy")
     policy_commands = policy.add_subparsers(dest="policy_command", required=True)

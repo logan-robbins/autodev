@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from autodev import pods, product, trace
 from autodev.config import ConfigError, LoopConfig, ProjectConfig
+from autodev.podmemory import append_pod_memory
 from autodev.prompts import compose_law, render_identity
 from autodev.sessions import RunContext, session_name, start_session
 from autodev.state import pod_memory_path, project_paths, write_brief, write_identity, write_role_law
@@ -44,7 +45,7 @@ class ScheduleDecision:
     node_id: str
     role: str
     run_id: str
-    action: str  # scheduled | advanced | gated | at-capacity | running | shipped | blocked
+    action: str  # scheduled | advanced | gated | at-capacity | running | shipped | blocked | retried | escalated
     agent: str | None = None
 
 
@@ -121,11 +122,59 @@ def _prev_done(feature: dict, role: str) -> str | None:
     return previous
 
 
+def _blocked_index(feature: dict) -> int | None:
+    """Index of the feature's first blocked loop entry (the failed rung)."""
+    return next((index for index, entry in enumerate(feature["loop"]) if entry["s"] == "blocked"), None)
+
+
+def _pjm_responder_index(feature: dict, blocked_index: int) -> int | None:
+    """The self-retry responder: nearest project-manager entry strictly before the
+    blocked rung. ``None`` (no earlier PjM) means the ladder escalates instead."""
+    responder = None
+    for index, entry in enumerate(feature["loop"][:blocked_index]):
+        if entry["role"] == "project-manager":
+            responder = index
+    return responder
+
+
+def _run_id_from_ref(run_ref: str | None) -> str:
+    """Strip the ``runs/`` prefix a feature's run_ref carries; ``""`` when absent."""
+    if not run_ref:
+        return ""
+    return run_ref.split("/", 1)[1] if run_ref.startswith("runs/") else run_ref
+
+
 def _read_run(project: ProjectConfig, run_id: str) -> trace.RunView | None:
     events = trace.read_events(_run_dir(project, run_id))
     if not events:
         return None
     return trace.to_dag(events)
+
+
+def failed_pass_count(project: ProjectConfig, feature_id: str) -> int:
+    """Count the feature's runs whose derived verdict is ``failed`` (U4).
+
+    The self-retry budget is spent against this count. It is *derived* from the
+    append-only trace — the durable store — never from a stored counter that
+    could drift from history. Each run is attributed by its
+    ``run_started.node_ref.feature`` (surfaced as ``RunView.node_ref``), so a run
+    belonging to another feature or a non-feature node is ignored. O(runs) per
+    call, the same fold-each-run shape as :func:`_count_running`.
+    """
+    runs_dir = project_paths(project.id).runs
+    if not runs_dir.is_dir():
+        return 0
+    count = 0
+    for run_dir in sorted(runs_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        events = trace.read_events(run_dir)
+        if not events:
+            continue
+        view = trace.to_dag(events)
+        if view.node_ref.get("feature") == feature_id and view.status == "failed":
+            count += 1
+    return count
 
 
 def _materialized_agent(project: ProjectConfig, agent_id: str):
@@ -213,6 +262,99 @@ def _count_running(project: ProjectConfig) -> int:
     return running
 
 
+def _self_retry(
+    project: ProjectConfig,
+    feature: dict,
+    blocked_role: str,
+    responder_index: int,
+    blocked_index: int,
+    run_id: str,
+    attempts: int,
+    max_attempts: int,
+) -> None:
+    """Route the failure back to the Project Manager and re-flow the loop.
+
+    A ``question`` envelope is appended to the pod's shared memory (read
+    automatically by the re-activated PjM through the charter digest); every loop
+    rung from the PjM responder through the blocked rung is reset to ``pending``
+    so the next tick re-schedules PjM -> Eng; a ``phase_changed reason="self-retry"``
+    marks the transition on the failed run.
+    """
+    feature_id = feature["id"]
+    pillar = feature["pillar"]
+    node_ref = {"level": "feature", "pillar": pillar, "feature": feature_id}
+    responder_role = feature["loop"][responder_index]["role"]
+
+    role_title = blocked_role.replace("-", " ").title()
+    text = (
+        f"{role_title} failed on feature {feature_id} (attempt {attempts}/{max_attempts}). "
+        f"Verify red at {run_id}. PjM: re-shape the leaf/contract so the next "
+        f"{role_title} pass verifies."
+    )
+    view = _read_run(project, run_id)
+    if view is not None:
+        glosses = [node.gloss for node in view.nodes if node.gloss]
+        if glosses:
+            text += f" {glosses[-1]}"
+    append_pod_memory(
+        project.id,
+        pillar,
+        role=blocked_role,
+        agent=pods.select_member(project, blocked_role, pillar),
+        run_id=run_id,
+        kind="question",
+        text=text,
+    )
+
+    # Re-flow the segment [responder .. blocked]. set_loop_state resets every entry
+    # of a role, so resetting the distinct roles in that span re-flows PjM -> Eng.
+    for role in {feature["loop"][index]["role"] for index in range(responder_index, blocked_index + 1)}:
+        product.set_loop_state(project, feature_id, role, "pending")
+
+    trace.emit(
+        _run_dir(project, run_id),
+        trace.new_event(
+            "phase_changed",
+            node_ref=node_ref,
+            reason="self-retry",
+            **{"from": blocked_role, "to": responder_role},
+        ),
+    )
+
+
+def _drive_blocked(project: ProjectConfig, feature: dict, limits: LoopConfig, blocked_role: str) -> ScheduleDecision:
+    """The escalation ladder over a blocked feature: bounded self-retry, then escalate.
+
+    While the derived ``failed_pass_count`` is within ``limits.max_attempts`` and a
+    Project Manager precedes the blocked rung, route the failure back for one
+    self-retry (``retried``). Otherwise — the budget is exhausted, or there is no PjM
+    responder to route to — emit an ``escalated`` event once and keep the feature
+    ``blocked`` for the operator (``escalated``). The event is the durable signal the
+    operator seat keys off; the transient ``blocked`` phase is not.
+    """
+    feature_id = feature["id"]
+    run_id = _run_id_from_ref(feature["run_ref"])
+    attempts = failed_pass_count(project, feature_id)
+    blocked_index = _blocked_index(feature)
+    responder_index = _pjm_responder_index(feature, blocked_index) if blocked_index is not None else None
+
+    if responder_index is not None and attempts <= limits.max_attempts:
+        _self_retry(
+            project, feature, blocked_role, responder_index, blocked_index, run_id, attempts, limits.max_attempts
+        )
+        return ScheduleDecision("feature", feature_id, blocked_role, run_id, "retried")
+
+    node_ref = {"level": "feature", "pillar": feature["pillar"], "feature": feature_id}
+    reason = "budget exhausted" if responder_index is not None else "no project-manager responder"
+    already = run_id and any(event.get("type") == "escalated" for event in trace.read_events(_run_dir(project, run_id)))
+    if run_id and not already:
+        trace.emit(
+            _run_dir(project, run_id),
+            trace.new_event("escalated", node_ref=node_ref, role=blocked_role, attempts=attempts, reason=reason),
+        )
+    return ScheduleDecision("feature", feature_id, blocked_role, run_id, "escalated")
+
+
 def _drive_feature(
     project: ProjectConfig,
     feature: dict,
@@ -265,11 +407,12 @@ def _drive_feature(
 
     frontier = _frontier_role(feature)
     if frontier is None:
-        # No active or pending role: only an all-done loop is shipped; a blocked
-        # entry keeps the feature visibly blocked so it is never mislabeled shipped.
+        # No active or pending role: only an all-done loop is shipped. A blocked
+        # rung enters the escalation ladder (bounded self-retry, then park) so the
+        # feature is never mislabeled shipped.
         blocked = _blocked_role(feature)
         if blocked is not None:
-            decisions.append(ScheduleDecision("feature", feature_id, blocked, "", "blocked"))
+            decisions.append(_drive_blocked(project, feature, limits, blocked))
         else:
             decisions.append(ScheduleDecision("feature", feature_id, "", "", "shipped"))
         return decisions, running

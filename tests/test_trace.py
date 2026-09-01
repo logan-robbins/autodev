@@ -129,6 +129,61 @@ def test_read_events_missing_dir_is_empty(tmp_path: Path) -> None:
     assert read_events(tmp_path / "absent") == []
 
 
+def _escalated(**overrides) -> dict:
+    fields = {
+        "node_ref": {"level": "feature", "pillar": "replay-engine", "feature": "certified-l3-book"},
+        "role": "engineering",
+        "attempts": 2,
+        "reason": "budget exhausted",
+    }
+    fields.update(overrides)
+    return new_event("escalated", **fields)
+
+
+def test_escalated_event_validates_and_round_trips(tmp_path: Path) -> None:
+    assert "escalated" in trace.EVENT_TYPES
+    event = _escalated()
+    assert validate_event(event)["attempts"] == 2
+
+    run_dir = tmp_path / "runs" / "esc-1"
+    trace.emit(run_dir, event)
+    persisted = read_events(run_dir)
+    assert [e["type"] for e in persisted] == ["escalated"]
+    assert persisted[0]["reason"] == "budget exhausted"
+
+
+def test_escalated_event_rejects_missing_attempts() -> None:
+    with pytest.raises(TraceError, match="missing field"):
+        new_event(
+            "escalated",
+            node_ref={"level": "feature", "pillar": "p", "feature": "f"},
+            role="engineering",
+            reason="budget exhausted",
+        )
+
+
+def test_escalated_event_rejects_unknown_field() -> None:
+    with pytest.raises(TraceError, match="unknown field"):
+        _escalated(bogus=1)
+
+
+def test_escalated_event_rejects_non_integer_attempts() -> None:
+    with pytest.raises(TraceError, match="escalated.attempts must be an integer"):
+        _escalated(attempts="two")
+
+
+def test_to_dag_ignores_escalated_event(tmp_path: Path) -> None:
+    # An escalated event is a run-level signal, not a stage step: to_dag folds it to
+    # nothing and the existing verdict/nodes are unaffected.
+    run_dir = tmp_path / "runs" / "esc-fold"
+    trace.emit(run_dir, _eng_run_started())
+    trace.emit(run_dir, _escalated())
+    trace.emit(run_dir, new_event("run_finished", status="done"))
+    view = trace.to_dag(read_events(run_dir))
+    assert view.status == "done"
+    assert view.nodes == ()
+
+
 def test_emit_assigns_monotonic_seq(tmp_path: Path) -> None:
     run_dir = tmp_path / "runs" / "r1"
     first = trace.emit(run_dir, _run_started())
@@ -301,6 +356,68 @@ def test_to_dag_engineering_contract_first_shape() -> None:
     assert order.index("contract") < order.index("impl-a") < order.index("integrate")
     integrate_node = next(n for n in view.nodes if n.step_id == "integrate")
     assert integrate_node.status == "green"
+
+
+def _eng_run_started() -> dict:
+    return new_event(
+        "run_started",
+        run_id="eng-1",
+        role="engineering",
+        node_ref={"level": "feature", "pillar": "p", "feature": "f"},
+        goal="build",
+    )
+
+
+def test_to_dag_verify_red_sets_failed_status() -> None:
+    # A verify step is an *undeclared* red/green step_finished (event_from_hook folds
+    # a Bash verify command straight to it, never declaring a stage node). Its latest
+    # outcome is the run's verdict, overriding the Stop hook's hard-coded
+    # run_finished(done) — this is the trigger the escalation ladder keys off.
+    red = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0),
+        new_event("run_finished", status="done"),
+    ]
+    assert trace.to_dag(red).status == "failed"
+
+    green = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="green", output_artifacts=[], tokens=0),
+        new_event("run_finished", status="done"),
+    ]
+    assert trace.to_dag(green).status == "done"
+
+    # No verify ran: fall back to the run_finished status.
+    no_verify = [_eng_run_started(), new_event("run_finished", status="done")]
+    assert trace.to_dag(no_verify).status == "done"
+
+    # Unfinished run (a red verify but no run_finished yet): still running.
+    unfinished = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0),
+    ]
+    assert trace.to_dag(unfinished).status == "running"
+
+    # The latest verify wins: a red then a green re-run derives to done.
+    reran = [
+        _eng_run_started(),
+        new_event("step_finished", step_id="verify", status="red", output_artifacts=[], tokens=0),
+        new_event("step_finished", step_id="verify", status="green", output_artifacts=[], tokens=0),
+        new_event("run_finished", status="done"),
+    ]
+    assert trace.to_dag(reran).status == "done"
+
+
+def test_to_dag_declared_node_red_does_not_override_run_status() -> None:
+    # A *declared* stage node finishing red/green (a contract-first RED test) is a
+    # node status, never the verify verdict: the run stays "done" from run_finished.
+    events = [_eng_run_started()]
+    events += _step("integrate", "integrate")
+    events.append(_finish("integrate", status="red"))
+    events.append(new_event("run_finished", status="done"))
+    view = trace.to_dag(events)
+    assert view.status == "done"
+    assert next(n for n in view.nodes if n.step_id == "integrate").status == "red"
 
 
 def test_to_dag_folds_persisted_events_jsonl(tmp_path: Path) -> None:

@@ -328,6 +328,59 @@ def test_rejects_non_positive_max_concurrent(project_repo: Path) -> None:
         load_project(project_repo)
 
 
+def _loop_tables(*, max_attempts: str | None) -> str:
+    extra = f"\nmax_attempts = {max_attempts}" if max_attempts is not None else ""
+    return (
+        '\n[roles.engineering]\nshape = "contract-first"\ncharter = "x"\n'
+        f'\n[loop]\nsequence = ["engineering"]\nmax_concurrent = 2{extra}\n'
+    )
+
+
+def test_loop_max_attempts_parses_and_defaults(project_repo: Path) -> None:
+    _add_tables(project_repo, _loop_tables(max_attempts="2"))
+    project = load_project(project_repo)
+    assert project.loop is not None
+    assert project.loop.max_attempts == 2
+
+
+def test_loop_max_attempts_defaults_to_one_when_omitted(project_repo: Path) -> None:
+    _add_tables(project_repo, _loop_tables(max_attempts=None))
+    project = load_project(project_repo)
+    assert project.loop is not None
+    assert project.loop.max_attempts == 1  # default self-retry budget
+
+
+def test_loop_max_attempts_allows_zero(project_repo: Path) -> None:
+    # 0 is a valid budget (escalate on the first failure), distinct from the default.
+    _add_tables(project_repo, _loop_tables(max_attempts="0"))
+    assert load_project(project_repo).loop.max_attempts == 0
+
+
+def test_rejects_negative_max_attempts(project_repo: Path) -> None:
+    _add_tables(project_repo, _loop_tables(max_attempts="-1"))
+    with pytest.raises(ConfigError, match="loop.max_attempts must be a non-negative integer"):
+        load_project(project_repo)
+
+
+def test_rejects_unknown_loop_key(project_repo: Path) -> None:
+    _add_tables(
+        project_repo,
+        '\n[roles.engineering]\nshape = "contract-first"\ncharter = "x"\n'
+        '\n[loop]\nsequence = ["engineering"]\nmax_concurrent = 2\nbogus = 1\n',
+    )
+    with pytest.raises(ConfigError, match=r"\[loop\] has unknown field\(s\): bogus"):
+        load_project(project_repo)
+
+
+def test_examples_scaffold_defaults_max_attempts_to_one(project_repo: Path) -> None:
+    # The shipped company scaffold omits max_attempts, so it loads with the default 1.
+    example = Path(__file__).resolve().parents[1] / "examples" / "autodev.toml"
+    (project_repo / "autodev.toml").write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    project = load_project(project_repo)
+    assert project.loop is not None
+    assert project.loop.max_attempts == 1
+
+
 @pytest.mark.parametrize("value", ["0", "1", '"true"'])
 def test_rejects_non_boolean_permission_bypass(project_repo: Path, value: str) -> None:
     descriptor = project_repo / "autodev.toml"
