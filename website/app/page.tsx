@@ -131,8 +131,7 @@ export default function Home() {
                   ))}
                 </div>
                 <div className="fleet-caption">
-                  60 Harness Agents <span>·</span> 6 Pillars <span>·</span> One
-                  coordinated demo
+                  60 Harness Agents <span>·</span> 6 Pillars
                 </div>
               </div>
               <div className="flow-connector">
