@@ -575,8 +575,8 @@ function render(force = false) {
     icon("play") +
     `<span>${demo ? "Return to live workspace" : "Explore a 60-agent fleet"}<small>${demo ? "Leave demonstration" : "Interactive demonstration"}</small></span>`;
   if (boot.demoOnly) {
-    $("demo-toggle").innerHTML = icon("arrow") + "Back to Autodev";
-    $("exit-demo").textContent = "Back to Autodev";
+    $("demo-toggle").innerHTML = icon("arrow") + "Back to autodev team";
+    $("exit-demo").textContent = "Back to autodev team";
   }
   $("footer-info").textContent = demo
     ? "Demo · 60 simulated agents"

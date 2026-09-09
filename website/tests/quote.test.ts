@@ -32,5 +32,8 @@ await test('draft has a fixed recipient and encodes supplied content safely', ()
   assert.ok(draft.startsWith('mailto:info@qmachina.com?'));
   const params = new URLSearchParams(draft.split('?')[1]);
   assert.equal(params.get('body'), quoteText(q));
-  assert.equal(params.get('subject'), 'Autodev quote request — Alex Morgan');
+  assert.equal(
+    params.get('subject'),
+    'autodev team quote request — Alex Morgan',
+  );
 });

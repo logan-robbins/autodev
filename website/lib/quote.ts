@@ -45,8 +45,8 @@ export function parseQuote(value: unknown): Quote {
   return { id, name, email, company, project, timeline };
 }
 export function quoteText(q: Quote) {
-  return `Autodev project enquiry\n\nName: ${q.name}\nEmail: ${q.email}\nCompany: ${q.company || 'Not provided'}\nTimeline: ${q.timeline}\n\nProject brief\n${q.project}\n\nReference: ${q.id}`;
+  return `autodev team project enquiry\n\nName: ${q.name}\nEmail: ${q.email}\nCompany: ${q.company || 'Not provided'}\nTimeline: ${q.timeline}\n\nProject brief\n${q.project}\n\nReference: ${q.id}`;
 }
 export function quoteMailto(q: Quote) {
-  return `mailto:${QUOTE_RECIPIENT}?subject=${encodeURIComponent('Autodev quote request — ' + q.name)}&body=${encodeURIComponent(quoteText(q))}`;
+  return `mailto:${QUOTE_RECIPIENT}?subject=${encodeURIComponent('autodev team quote request — ' + q.name)}&body=${encodeURIComponent(quoteText(q))}`;
 }

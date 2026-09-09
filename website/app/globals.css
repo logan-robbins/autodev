@@ -123,6 +123,14 @@ button:focus-visible {
 .brand-period {
   color: var(--acid);
 }
+.brand-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.brand-team {
+  color: var(--acid);
+}
 .site-header nav {
   display: flex;
   gap: 34px;
@@ -639,6 +647,16 @@ main {
   }
 }
 @media (max-width: 1000px) {
+  .site-header .wordmark {
+    font-size: 25px;
+  }
+  .site-header .brand-mark {
+    display: none;
+  }
+  .site-header nav {
+    gap: 16px;
+    font-size: 13px;
+  }
   .wrap {
     padding-left: 30px;
     padding-right: 30px;
@@ -710,6 +728,16 @@ main {
   }
   .wordmark {
     font-size: 25px;
+  }
+  .site-header .brand-name {
+    flex-direction: column;
+    gap: 2px;
+    line-height: 1;
+  }
+  .site-header .brand-team {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1px;
   }
   .brand-mark {
     display: none;

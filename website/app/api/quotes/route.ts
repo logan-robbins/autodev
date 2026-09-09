@@ -5,7 +5,7 @@ export async function POST(request: Request) {
   const origin = request.headers.get('origin');
   if (origin && origin !== new URL(request.url).origin)
     return Response.json(
-      { error: 'Please submit the form from the Autodev website.' },
+      { error: 'Please submit the form from the autodev team website.' },
       { status: 403 },
     );
   if (!request.headers.get('content-type')?.includes('application/json'))
@@ -70,7 +70,7 @@ export async function POST(request: Request) {
         from: process.env.QUOTE_FROM_EMAIL,
         to: [QUOTE_RECIPIENT],
         reply_to: quote.email,
-        subject: `Autodev quote request — ${quote.name}`,
+        subject: `autodev team quote request — ${quote.name}`,
         text: quoteText(quote),
       }),
       signal: AbortSignal.timeout(12000),

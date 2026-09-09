@@ -7,17 +7,21 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
 });
 export const metadata: Metadata = {
-  title: 'Autodev — Frontier quality. Face-melting speed.',
+  metadataBase: new URL('https://autodev-team.com'),
+  alternates: { canonical: '/' },
+  title: 'autodev team — Frontier quality. Face-melting speed.',
   description:
     'The AI-powered human hybrid agency. Extraordinary engineers and our proprietary Autodev platform deliver agentic software development at scale.',
   icons: { icon: '/favicon.svg' },
   openGraph: {
-    title: 'Autodev — Human × AI',
+    title: 'autodev team — Human × AI',
+    siteName: 'autodev team',
+    url: '/',
     description: 'Frontier engineering. Agentic execution. Verified delivery.',
   },
   twitter: {
     card: 'summary',
-    title: 'Autodev — Human × AI',
+    title: 'autodev team — Human × AI',
     description: 'Frontier quality. Face-melting speed.',
   },
 };

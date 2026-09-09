@@ -40,9 +40,14 @@ export default function Home() {
         Skip to content
       </a>
       <header className="site-header wrap">
-        <Link href="/" className="wordmark" aria-label="Autodev home">
-          <span className="brand-mark">a↗</span>autodev
-          <span className="brand-period">.</span>
+        <Link href="/" className="wordmark" aria-label="autodev team home">
+          <span className="brand-mark">a↗</span>
+          <span className="brand-name">
+            autodev{' '}
+            <span className="brand-team">
+              team<span className="brand-period">.</span>
+            </span>
+          </span>
         </Link>
         <nav aria-label="Main navigation">
           <a href="#approach">Our approach</a>
@@ -456,11 +461,16 @@ export default function Home() {
         </section>
       </main>
       <footer className="site-footer wrap">
-        <Link className="wordmark" href="/">
-          autodev<span className="brand-period">.</span>
+        <Link className="wordmark" href="/" aria-label="autodev team home">
+          <span className="brand-name">
+            autodev{' '}
+            <span className="brand-team">
+              team<span className="brand-period">.</span>
+            </span>
+          </span>
         </Link>
         <span>Human × AI. Built for what’s next.</span>
-        <span>© {new Date().getFullYear()} Autodev</span>
+        <span>© {new Date().getFullYear()} autodev team</span>
       </footer>
     </>
   );
