@@ -859,6 +859,23 @@ main {
     width: 100%;
   }
 }
+@media (max-width: 380px) {
+  .site-header .wordmark {
+    font-size: 22px;
+  }
+  .site-header nav {
+    gap: 10px;
+    font-size: 12px;
+  }
+  .site-header nav a {
+    gap: 5px;
+  }
+  .site-header .nav-quote {
+    font-size: 11px;
+    white-space: nowrap;
+    padding: 10px 7px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;

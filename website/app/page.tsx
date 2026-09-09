@@ -69,8 +69,9 @@ export default function Home() {
             <p>
               Extraordinary engineers. Relentless AI automation.
               <br />
-              We build ambitious software at a fraction of the cost. 100%
-              On-shore team.
+              We build ambitious software at a fraction of the cost.
+              <br />
+              100% On-shore team.
             </p>
             <div className="hero-actions">
               <a className="cta" href="#quote">
