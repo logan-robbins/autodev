@@ -17,7 +17,6 @@ export default function QuoteForm({
 }: {
   emailDeliveryEnabled: boolean;
 }) {
-  const [budget, setBudget] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<string | null>(null);
   const [status, setStatus] = useState<
     'idle' | 'sending' | 'success' | 'error' | 'draft'
@@ -37,7 +36,6 @@ export default function QuoteForm({
       company: form.get('company'),
       project: form.get('project'),
       website: form.get('website'),
-      budget: budget || 'Not sure yet',
       timeline: timeline || 'Flexible',
     };
     if (!emailDeliveryEnabled) {
@@ -162,52 +160,27 @@ export default function QuoteForm({
           rows={4}
         />
       </label>
-      <div className="form-grid">
-        <div className="select-field">
-          <label id="budget-label" htmlFor="budget">
-            Budget range
-          </label>
-          <Select value={budget} onValueChange={setBudget}>
-            <SelectTrigger id="budget" aria-labelledby="budget-label">
-              <SelectValue placeholder="Select a range" />
-            </SelectTrigger>
-            <SelectContent>
-              {[
-                'Under $25k',
-                '$25k–$75k',
-                '$75k–$150k',
-                '$150k+',
-                'Not sure yet',
-              ].map((v) => (
-                <SelectItem key={v} value={v}>
-                  {v}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="select-field">
-          <label id="timeline-label" htmlFor="timeline">
-            Timeline
-          </label>
-          <Select value={timeline} onValueChange={setTimeline}>
-            <SelectTrigger id="timeline" aria-labelledby="timeline-label">
-              <SelectValue placeholder="When do we start?" />
-            </SelectTrigger>
-            <SelectContent>
-              {[
-                'As soon as possible',
-                'Within 1 month',
-                'Within 3 months',
-                'Flexible',
-              ].map((v) => (
-                <SelectItem key={v} value={v}>
-                  {v}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="select-field">
+        <label id="timeline-label" htmlFor="timeline">
+          Timeline
+        </label>
+        <Select value={timeline} onValueChange={setTimeline}>
+          <SelectTrigger id="timeline" aria-labelledby="timeline-label">
+            <SelectValue placeholder="When do we start?" />
+          </SelectTrigger>
+          <SelectContent>
+            {[
+              'As soon as possible',
+              'Within 1 month',
+              'Within 3 months',
+              'Flexible',
+            ].map((v) => (
+              <SelectItem key={v} value={v}>
+                {v}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div className="honeypot" aria-hidden="true">
         <label htmlFor="website">

@@ -45,6 +45,7 @@ export default function Home() {
           <a href="/demo/index.html?demo=1" target="_blank" rel="noreferrer">
             Platform demo <ArrowUpRight size={15} />
           </a>
+          <a href="#pricing">Pricing</a>
           <a className="nav-quote" href="#quote">
             Request a quote <ArrowUpRight size={15} />
           </a>
@@ -240,6 +241,62 @@ export default function Home() {
               <span>Contracts before code</span>
               <p>Defined outputs, executable checks, visible delivery.</p>
             </div>
+          </div>
+        </section>
+        <section
+          className="pricing wrap"
+          id="pricing"
+          aria-labelledby="pricing-title"
+        >
+          <div className="pricing-intro">
+            <span className="eyebrow">PRICING MODEL</span>
+            <h2 id="pricing-title">
+              A platform license.
+              <br />A human advantage.
+            </h2>
+            <p>
+              One model: software licenses for your AI fleet, plus hourly
+              engineering expertise.
+            </p>
+          </div>
+          <div className="pricing-components">
+            <article className="pricing-component">
+              <span className="mono">01 / SOFTWARE LICENSE</span>
+              <h3>Autodev platform</h3>
+              <div className="license-price">
+                <strong>$100</strong>
+                <span>
+                  per agent
+                  <br />
+                  per month
+                </span>
+              </div>
+              <p>
+                License the proprietary Autodev platform for the agents working
+                on your project.
+              </p>
+            </article>
+            <span className="pricing-plus" aria-label="plus">
+              +
+            </span>
+            <article className="pricing-component">
+              <span className="mono">02 / ENGINEER OPERATORS</span>
+              <h3>100% onshore engineers</h3>
+              <div className="operator-price">Low hourly rate</div>
+              <p>
+                Experienced engineers direct the work, operate the platform, and
+                guide delivery. Operator rates and hours are scoped with your
+                project.
+              </p>
+            </article>
+          </div>
+          <div className="pricing-footer">
+            <p>
+              Your quote combines agent licenses and engineer operator hours.
+            </p>
+            <a className="text-link" href="#quote">
+              Request a quote <ArrowUpRight size={18} />
+            </a>
           </div>
         </section>
         <section className="quote-section" id="quote">

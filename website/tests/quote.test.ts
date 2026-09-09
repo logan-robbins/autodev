@@ -7,7 +7,6 @@ const valid = {
   email: 'alex@example.com',
   company: 'Example',
   project: 'Build a customer portal with an accessible onboarding flow.',
-  budget: '$25k–$75k',
   timeline: 'Within 1 month',
 };
 await test('quote fields are validated and trimmed', () => {
@@ -17,7 +16,6 @@ await test('quote fields are validated and trimmed', () => {
     { email: 'bad' },
     { project: 'short' },
     { id: 'invalid' },
-    { budget: 'unknown' },
     { timeline: 'unknown' },
     { name: 'Injected\r\nHeader: test' },
     { project: 'x'.repeat(5001) },

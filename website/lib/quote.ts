@@ -1,11 +1,4 @@
 export const QUOTE_RECIPIENT = 'info@qmachina.com';
-export const BUDGETS = [
-  'Under $25k',
-  '$25k–$75k',
-  '$75k–$150k',
-  '$150k+',
-  'Not sure yet',
-];
 export const TIMELINES = [
   'As soon as possible',
   'Within 1 month',
@@ -18,7 +11,6 @@ export type Quote = {
   email: string;
   company: string;
   project: string;
-  budget: string;
   timeline: string;
 };
 export function parseQuote(value: unknown): Quote {
@@ -42,19 +34,18 @@ export function parseQuote(value: unknown): Quote {
     email = field('email', 254, 3),
     company = field('company', 150),
     project = field('project', 5000, 20),
-    budget = field('budget', 40),
     timeline = field('timeline', 40);
   if (
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
     /[\r\n]/.test(name + company)
   )
     throw new Error('Please check your name, company, and email address.');
-  if (!BUDGETS.includes(budget) || !TIMELINES.includes(timeline))
-    throw new Error('Please choose a budget and timeline.');
-  return { id, name, email, company, project, budget, timeline };
+  if (!TIMELINES.includes(timeline))
+    throw new Error('Please choose a timeline.');
+  return { id, name, email, company, project, timeline };
 }
 export function quoteText(q: Quote) {
-  return `Autodev project enquiry\n\nName: ${q.name}\nEmail: ${q.email}\nCompany: ${q.company || 'Not provided'}\nBudget: ${q.budget}\nTimeline: ${q.timeline}\n\nProject brief\n${q.project}\n\nReference: ${q.id}`;
+  return `Autodev project enquiry\n\nName: ${q.name}\nEmail: ${q.email}\nCompany: ${q.company || 'Not provided'}\nTimeline: ${q.timeline}\n\nProject brief\n${q.project}\n\nReference: ${q.id}`;
 }
 export function quoteMailto(q: Quote) {
   return `mailto:${QUOTE_RECIPIENT}?subject=${encodeURIComponent('Autodev quote request — ' + q.name)}&body=${encodeURIComponent(quoteText(q))}`;
