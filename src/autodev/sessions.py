@@ -12,7 +12,8 @@ from pathlib import Path
 from autodev.config import AgentConfig, ProjectConfig, render_session_name
 from autodev.prompts import render_goal
 from autodev.providers import launch_command
-from autodev.state import project_paths
+from autodev.state import autodev_home, project_paths
+from autodev.tasks import TaskStore
 from autodev.workspaces import (
     Workspace,
     git_status,
@@ -39,6 +40,9 @@ class AgentStatus:
     branch: str
     git_status: str
     ownership_violations: tuple[str, ...]
+    pillar: str
+    template: str
+    task: str | None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -83,11 +87,11 @@ def session_exists(name: str) -> bool:
 
 def send_goal(project: ProjectConfig, agent: AgentConfig, *, dry_run: bool = False) -> str:
     name = session_name(project, agent)
-    prompt = render_goal(project, agent)
     if dry_run:
-        return prompt
+        return render_goal(project, agent)
     if not session_exists(name):
         raise SessionError(f"tmux session {name!r} is not running; run `autodev ensure` first")
+    prompt = render_goal(project, agent)
     _tmux("send-keys", "-t", name, "-l", prompt)
     time.sleep(0.2)
     _tmux("send-keys", "-t", name, "C-m")
@@ -118,6 +122,12 @@ def start_session(
         "-d",
         "-s",
         name,
+        "-e",
+        f"AUTODEV_AGENT_ID={agent.id}",
+        "-e",
+        f"AUTODEV_PROJECT_DESCRIPTOR={project.descriptor}",
+        "-e",
+        f"AUTODEV_HOME={autodev_home()}",
         "-c",
         str(workspace.path),
         shlex.join(command),
@@ -163,13 +173,15 @@ def agent_status(project: ProjectConfig, agent: AgentConfig, *, home: Path | Non
     name = session_name(project, agent)
     status_text = ""
     violations: tuple[str, ...] = ()
-    if (path / ".git").is_file():
-        workspace = Workspace(path=path, branch=branch)
+    exists = (path / ".git").is_file() if project.execution == "git" else path.is_dir()
+    if exists:
+        workspace = Workspace(path=path, branch=branch if project.execution == "git" else "")
         try:
             status_text = git_status(workspace)
             violations = ownership_violations(workspace, agent)
         except RuntimeError as exc:
             status_text = f"ERROR: {exc}"
+    task = TaskStore(project, agent).active()
     return AgentStatus(
         project=project.id,
         agent=agent.id,
@@ -178,8 +190,11 @@ def agent_status(project: ProjectConfig, agent: AgentConfig, *, home: Path | Non
         running=session_exists(name),
         pane_command=_pane_command(name),
         worktree=str(path),
-        worktree_exists=(path / ".git").is_file(),
-        branch=branch,
+        worktree_exists=exists,
+        branch=branch if project.execution == "git" else "",
         git_status=status_text,
         ownership_violations=violations,
+        pillar=agent.pillar,
+        template=agent.template,
+        task=task["id"] if task else None,
     )

@@ -1,4 +1,4 @@
-"""Autodev's shared runtime for project-scoped engineering agents."""
+"""Autodev's shared runtime for governed native Harness Agents."""
 
 from importlib.metadata import version
 

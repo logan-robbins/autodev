@@ -1,56 +1,90 @@
-"""Core project-independent prompt templates."""
+"""Role-scoped contracts for native harnesses that work from their own task ledgers."""
 
 from __future__ import annotations
 
+import json
+import shlex
+from pathlib import Path
+
 from autodev.config import AgentConfig, ProjectConfig
-
-
-def _list(values: tuple[str, ...], *, empty: str = "none") -> str:
-    if not values:
-        return f"- {empty}"
-    return "\n".join(f"- {value}" for value in values)
+from autodev.tasks import TaskStore
 
 
 def render_goal(project: ProjectConfig, agent: AgentConfig) -> str:
-    verification = _list(project.verify_commands, empty="use the repository's relevant local checks")
-    return f"""You are the `{agent.id}` Autodev agent for {project.name}.
+    pillar = project.pillar(agent.pillar)
+    store = TaskStore(project, agent)
+    checkout = Path(__file__).resolve().parents[2]
+    command = shlex.join(["uv", "run", "--project", str(checkout), "autodev"])
+    selected = shlex.quote(str(project.descriptor))
+    actor = shlex.quote(agent.id)
+    outputs = "\n".join(
+        f"- {pillar.slug}/{item.path}: {item.format}; schema={item.schema or 'none'}; {item.description}"
+        for item in agent.deliverables
+    )
+    dependencies = (
+        "\n".join(f"- {slug}/pillar.toml: {project.pillar(slug).summary}" for slug in pillar.dependencies) or "- none"
+    )
+    completion = (
+        "Commit verified owned changes on this dedicated branch before completing the task."
+        if project.execution == "git"
+        else "Leave verified artifacts in this isolated workspace for publication by task complete."
+    )
+    role = (
+        "You are this Pod's Project Manager Harness Agent. You may read and tend every Harness Agent ledger in this Pod. "
+        "Use task create, task revise, or task import to assign work; use task dispatch to nudge ready workers. "
+        "Workers own execution and update their own completion or blocked state. Do not complete their tasks. "
+        "Other Pods' internal ledgers are outside your scope."
+        if store.manager
+        else "Read only your own task ledger. Your Pod's Project Manager, when assigned, tends your task assignments. "
+        "You are responsible for reading your tasks, delivering the declared outputs, and updating your own task state."
+    )
+    tasks = [t for t in store.list() if t["status"] != "completed"]
+    # A small initial view; agents use ledger commands to retrieve additional tasks.
+    preview = json.dumps(tasks[:8], ensure_ascii=False)
+    return f"""You are Harness Agent `{agent.id}` instantiated from `{agent.template}` in the `{pillar.slug}` Pillar's single Pod.
+Your full native coding harness supplies your tools and reasoning. You run in your own tmux session.
 
-Purpose:
-{agent.purpose}
+Project: {project.name}
+Project instructions: {project.instructions}
+Role: {agent.purpose}
+Template instructions: {agent.instructions}
+Standing goal: {agent.goal}
+{role}
 
-Project instructions:
-{project.instructions}
+Pillar boundary: {pillar.slug}/pillar.toml
+Summary: {pillar.summary}
+Responsibility: {pillar.responsibility}
+Interface state: {pillar.state}
+Consumption: {pillar.consumption}
+Constraints: {pillar.constraints}
+Declared dependencies:
+{dependencies}
 
 Owned write roots:
-{_list(agent.write_roots)}
+{chr(10).join("- " + path for path in agent.write_roots)}
+Additional read-only context:
+{chr(10).join("- " + path for path in (*project.context_roots, *agent.read_roots)) or "- none"}
+Required deterministic deliverables, relative to workspace root:
+{outputs}
 
-Read-only context roots:
-{_list(tuple(dict.fromkeys((*project.context_roots, *agent.read_roots))))}
+Your canonical ledger: {project.root / pillar.slug / "tasks" / agent.local_id / "ledger.json"}
+Ledger view (first 8 unfinished tasks visible to your role, {len(tasks)} total):
+{preview}
 
-Standing goal:
-{agent.goal}
+Worker loop:
+1. Read your tasks: {command} task list {selected} --actor {actor}
+2. Claim your next ready task: {command} task claim {selected} --actor {actor}
+   Read its instructions and acceptance criteria. If no task is ready, report that you are idle or blocked; do not invent an assignment.
+3. Discover the current workspace and public interfaces. Modify only the owned write roots. Treat raw source data as immutable unless your task explicitly authorizes changes.
+4. Build and verify the interface first. Fixtures and unavailable responses support interface development; never present them as completed business functionality.
+   Report meaningful work steps with: {command} task progress {selected} TASK_ID --actor {actor} --message "Current step and outcome"
+5. Deliver the exact required artifacts and verify the task's acceptance criteria. {completion}
+6. Update your ledger by running: {command} task complete {selected} TASK_ID --actor {actor}
+   This validates and publishes your output, then records completion and delivery evidence in your ledger. A failed check leaves the task running for you to fix.
+7. If blocked: {command} task block {selected} TASK_ID --actor {actor} --reason REASON
+   Your Project Manager can read the reason and revise the task.
+8. Read your ledger again and continue with the next ready task. {"Review your Pod's ledgers to coordinate assignments and dependencies." if store.manager else "Keep other workers' ledgers out of your context."}
 
-Operating contract:
-1. Discover existing patterns and current Git state before changing anything.
-2. Select one vertically complete, locally actionable work item. Make the task
-   state explicit using the project's existing task mechanism when it has one.
-3. Modify only the owned write roots listed above. Read-only context is for
-   understanding and verification, never edits. If completion requires another
-   agent's owned path, stop and report the exact provider change instead of
-   crossing the boundary.
-4. Implement one canonical production path. Do not represent a stub,
-   placeholder, mock, fallback, compatibility path, or narrowed scope as
-   complete. Fail fast when a real prerequisite is absent.
-5. Treat raw source data as immutable unless the project instructions
-   explicitly authorize a mutation.
-6. Verify the full change locally. Project-declared verification commands:
-{verification}
-7. Update existing task state and README documentation when behavior,
-   configuration, launch, or debugging instructions changed.
-8. Inspect the final diff for ownership violations, dead code, secrets, and
-   accidental artifacts. Commit the verified work on this dedicated branch
-   with a precise message, then stop. Autodev integration is a separate gate.
-
-Complete exactly one work item in this pass. Do not merely describe what you
-would do; carry it through implementation, verification, task-state update,
-and commit when its prerequisites are present."""
+Use ledger commands for atomic updates; never edit ledger storage directly. Contract and template files are maintained separately from task execution.
+Memory implementation is deferred.
+"""

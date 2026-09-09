@@ -1,45 +1,69 @@
 ---
 name: autodev-operator
-description: Configure and operate the repository-owned Autodev runtime for an existing Git repository. Use when the user asks to set up Autodev for a repo, define its Codex or Claude worker pods, configure tmux names or a project UI port, launch or supervise workers, check pod status, send standing goals, or integrate completed worker branches.
+description: Configure and operate Autodev workspaces, Pillar contracts, and native Codex or Claude Code harness sessions. Use for Autodev setup, template assignments, scoped task-ledger operation, session supervision, or verified publication.
 ---
 
 # Autodev Operator
 
-Act as the operator from the user's current Codex or Claude session. Do not launch a separate operator agent. Autodev tmux sessions are workers; this session configures, supervises, and integrates them.
+The user's current conversation is the Orchestrator. Autodev launches full native
+harnesses in individual tmux sessions. Each Pillar has one implicit Pod; an
+optional Project Manager Harness Agent tends its Pod's individual task ledgers.
+Workers read their own tasks, deliver outputs, and update their own completion or
+blocked state. Preserve that division of responsibility while operating the system.
 
-## Resolve Autodev
+## Resolve the runtime
 
-Run `uv run <skill-directory>/scripts/runtime.py` and use the returned `command` prefix for every Autodev invocation. In Claude Code, the skill directory is `${CLAUDE_SKILL_DIR}`. In Codex, use the directory containing this `SKILL.md` from the discovered skill path.
+Run `uv run <skill-directory>/scripts/runtime.py` and use its returned `command`
+prefix. In Claude Code the skill directory is `${CLAUDE_SKILL_DIR}`; in Codex it
+is the directory containing this discovered skill. If resolution fails, report
+the failure. Do not replace or wrap the user's provider executables.
 
-Fail immediately if the script cannot resolve a valid Autodev checkout. Do not install, wrap, or replace the user's `codex` or `claude` executable.
+## Configure a workspace
 
-## Set Up a Repository
+Inspect the user's project and existing boundaries before authoring configuration.
+Read [references/descriptor.md](references/descriptor.md) for descriptor rules and
+commands. The default execution profile is an ordinary filesystem; use Git when
+requested or appropriate to the existing project.
 
-1. Resolve the repository's Git root. Require an initial commit and a clean integration checkout before creating `autodev.toml`.
-2. Discover before designing: inspect the repository structure, tracked instructions, verification commands, task or backlog conventions, and existing ownership boundaries.
-3. Read [references/descriptor.md](references/descriptor.md) before authoring the descriptor.
-4. Define the smallest complete set of workers with non-overlapping write roots. Give each worker one provider, purpose, and standing goal. Prefer existing architectural or pod boundaries over invented ones.
-5. Choose a collision-safe `runtime.session_pattern` and an unused localhost `runtime.ui_port`.
-6. Set `runtime.bypass_permissions` explicitly. Ask the user if their request does not settle the choice. This setting applies only to Autodev-managed workers. Never edit global Codex or Claude permission configuration.
-7. Create exactly one project adapter at the Git root: `autodev.toml`. Do not copy this skill or generate agent wrappers inside the managed repository.
-8. Run `autodev validate`, `autodev register`, and `autodev doctor` through the resolved command prefix. Correct every failure.
-9. Commit `autodev.toml` on the configured base branch before creating worktrees. Do not stage or commit unrelated user changes.
-10. Run `autodev ensure <project> --no-start`, then `autodev ensure <project> --send-goal`. Confirm all configured sessions are running with `autodev status <project> --json`.
-11. Start the bound UI with `autodev ui <project>` when the user wants it running. Otherwise provide its exact command and `http://127.0.0.1:<ui_port>/`.
+Create `autodev.toml` at the workspace root and peer `<slug>/pillar.toml` boundaries.
+Keep each Pillar's descriptions, interfaces, schemas, fixtures, templates, and
+outputs in that Pillar. Do not add departments, nested Pillars, or a contracts
+root. A valid Pillar needs at least one template-based Harness Agent; do not
+manufacture a mandatory manager. Memory is deferred.
 
-Use `autodev setup` when the user explicitly wants the human interactive wizard. When operating autonomously, author the same descriptor directly from repository evidence and validate it.
+Use `init` and `pillar create` for new directories. To adopt existing content,
+author the descriptor and interface files without replacing user material.
+Define deterministic deliverables and nonoverlapping write roots. Keep runnable
+fixtures and honest unavailable responses before building functionality. Validate
+the descriptors and each interface, then register the workspace and check `doctor`.
+Use the human-interactive `setup` wizard only when that interaction is wanted.
 
-## Supervise Workers
+Preserve explicit provider/model choices and native defaults when unspecified.
+`runtime.bypass_permissions = false` is the scaffold default; enable bypass only
+when the user's authorization supports it. Never change global harness settings.
+For Git execution, ensure all authored contracts and needed source are committed
+on the configured base before launching worktrees. Do not commit unrelated work.
 
-- Treat `autodev status <project> --json` as the primary runtime view. Use the configured tmux session names and persistent worker logs for diagnosis.
-- Send the standing goal with `autodev goal <project> <agent>` when a running worker is idle or needs another pass.
-- Keep the operator role separate from implementation. Do not directly perform work assigned to a worker while supervising the pod.
-- Stop workers with `autodev stop`; this preserves their branches and worktrees.
-- Integrate with `autodev merge <project> <agent>` only after the worker has committed its work, the worktree is clean, verification has passed, and ownership checks are clean.
-- Never bypass a failed ownership, Git, configuration, or verification guard. Surface the exact failure and resolve it in the responsible worker.
+## Operate the Pod
 
-## Operating Boundary
+Use `ensure --no-start` to prepare copies, `ensure --send-goal` to launch harnesses
+with their operating contracts, and `status --json` to inspect sessions. Startup
+does not invent or claim tasks. Existing sessions are reused; `stop` preserves
+workspaces and ledgers.
 
-The committed project descriptor is authoritative for worker count, providers, tmux naming, UI port, ownership, goals, and permission bypass. The UI edits that same file. Review and commit UI changes before launching new worktrees.
+The PM uses `task create`, `task import`, and `task revise` to tend assignments,
+then `task dispatch` to start/nudge workers with ready tasks. Scope these commands
+to the PM's Pod. The worker uses `task list`, `task claim`, `task complete`, and
+`task block` for its own work. Without a PM, a worker can tend its own assignments.
+Outside a launched session, task commands require `--actor PILLAR--AGENT`.
 
-Do not weaken machine-wide safety configuration. When `runtime.bypass_permissions = true`, Autodev passes each provider's documented bypass flag only to workers launched for that project.
+A worker's `task complete` validates and publishes owned outputs before recording
+completion. It commits its verified changes first under the Git profile. A failed
+check leaves the task running; resolve the failure rather than bypassing the
+contract. Use `goal` or PM `dispatch` to nudge idle sessions after new assignments.
+There is no background polling scheduler or separate Orchestrator acceptance queue.
+
+Use public Pillar outputs for cross-Pod coordination. The local CLI/UI are trusted
+operator tools; role scoping is not an OS security boundary. Open the project UI
+with `ui PROJECT` when requested. Configuration saves modify the same authored
+files; revalidate changed contracts before subsequent work.

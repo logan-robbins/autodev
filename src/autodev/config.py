@@ -1,4 +1,4 @@
-"""Load and validate the single-file Autodev project contract."""
+"""Workspace configuration and shared ontology types for Autodev v1."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 DESCRIPTOR_NAME = "autodev.toml"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 SUPPORTED_PROVIDERS = frozenset({"codex", "claude"})
 DEFAULT_SESSION_PATTERN = "autodev-{project}-{agent}"
 DEFAULT_UI_PORT = 8765
@@ -39,6 +39,47 @@ class AgentConfig:
     goal: str
     write_roots: tuple[str, ...]
     read_roots: tuple[str, ...]
+    pillar: str
+    local_id: str
+    template: str
+    instructions: str
+    deliverables: tuple[ArtifactSpec, ...]
+    role: str = "worker"
+
+
+@dataclass(frozen=True)
+class ArtifactSpec:
+    id: str
+    path: str
+    format: str
+    description: str
+    schema: str | None = None
+    fixture: str | None = None
+
+
+@dataclass(frozen=True)
+class PillarConfig:
+    slug: str
+    root: Path
+    summary: str
+    responsibility: str
+    state: str
+    consumption: str
+    constraints: str
+    inputs: tuple[ArtifactSpec, ...]
+    outputs: tuple[ArtifactSpec, ...]
+    dependencies: tuple[str, ...]
+    checks: tuple[str, ...]
+    agents: tuple[AgentConfig, ...]
+
+    @property
+    def descriptor(self) -> Path:
+        return self.root / "pillar.toml"
+
+    @property
+    def pod(self) -> tuple[AgentConfig, ...]:
+        """One implicit Pod: the assigned Harness Agents, regardless of session state."""
+        return self.agents
 
 
 @dataclass(frozen=True)
@@ -56,6 +97,14 @@ class ProjectConfig:
     bypass_permissions: bool
     providers: dict[str, ProviderConfig]
     agents: tuple[AgentConfig, ...]
+    pillars: tuple[PillarConfig, ...]
+    execution: str
+
+    def pillar(self, slug: str) -> PillarConfig:
+        for pillar in self.pillars:
+            if pillar.slug == slug:
+                return pillar
+        raise ConfigError(f"unknown Pillar {slug!r}")
 
     def agent(self, agent_id: str) -> AgentConfig:
         for agent in self.agents:
@@ -105,7 +154,7 @@ def _string_list(value: Any, label: str, *, allow_empty: bool = True) -> tuple[s
 
 def _id(value: Any, label: str) -> str:
     result = _nonempty_string(value, label)
-    if not _ID_RE.fullmatch(result):
+    if not _ID_RE.fullmatch(result) or "--" in result:
         raise ConfigError(f"{label} must match {_ID_RE.pattern!r}; got {result!r}")
     return result
 
@@ -117,7 +166,7 @@ def _root(value: str, label: str) -> str:
     path = PurePosixPath(value.rstrip("/"))
     if path.is_absolute() or not path.parts or path.parts == (".",) or ".." in path.parts:
         raise ConfigError(f"{label} must be a relative path below the repository root: {value!r}")
-    if any(part in {"", "."} for part in path.parts):
+    if any(part in {"", ".", ".git"} for part in value.rstrip("/").split("/")):
         raise ConfigError(f"{label} contains an invalid path component: {value!r}")
     normalized = path.as_posix()
     if normalized == DESCRIPTOR_NAME:
@@ -217,22 +266,29 @@ def descriptor_path(value: str | Path | None = None, *, cwd: Path | None = None)
     raise ConfigError(f"no {DESCRIPTOR_NAME} found at or above {current}")
 
 
-def load_project(value: str | Path | None = None, *, cwd: Path | None = None) -> ProjectConfig:
+def load_project(
+    value: str | Path | None = None, *, cwd: Path | None = None, pillar_overrides: dict[str, str] | None = None
+) -> ProjectConfig:
     descriptor = descriptor_path(value, cwd=cwd)
     try:
         data = tomllib.loads(descriptor.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"cannot read {descriptor}: {exc}") from exc
 
-    if data.get("schema_version") != SCHEMA_VERSION:
+    if type(data.get("schema_version")) is not int or data["schema_version"] != SCHEMA_VERSION:
         raise ConfigError(f"schema_version must be {SCHEMA_VERSION}")
 
     project_data = _table(data.get("project"), "[project]")
     project_id = _id(project_data.get("id"), "project.id")
     name = _nonempty_string(project_data.get("name"), "project.name")
-    base_branch = _nonempty_string(project_data.get("base_branch"), "project.base_branch")
+    execution = project_data.get("execution", "filesystem")
+    if execution not in {"filesystem", "git"}:
+        raise ConfigError("project.execution must be filesystem or git")
+    base_branch = _nonempty_string(project_data.get("base_branch", "main"), "project.base_branch")
     instructions = _nonempty_string(project_data.get("instructions"), "project.instructions")
     context_roots = _roots(project_data.get("context_roots", []), "project.context_roots")
+    if any("tasks" in Path(path).parts for path in context_roots):
+        raise ConfigError("task ledgers are scoped through the ledger API, not project.context_roots")
     verify_commands = _string_list(project_data.get("verify_commands", []), "project.verify_commands")
     runtime_data = _table(data.get("runtime", {}), "[runtime]")
     session_pattern = validate_session_pattern(
@@ -244,8 +300,8 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
     ui_port = _ui_port(runtime_data.get("ui_port"))
     bypass_permissions = _boolean(runtime_data.get("bypass_permissions"), "runtime.bypass_permissions")
 
-    repo_root = _git_root(descriptor)
-    if repo_root != descriptor.parent.resolve():
+    repo_root = descriptor.parent.resolve()
+    if execution == "git" and _git_root(descriptor) != repo_root:
         raise ConfigError(f"{DESCRIPTOR_NAME} must be at the Git worktree root {repo_root}; found {descriptor}")
 
     provider_data = _table(data.get("providers", {}), "[providers]")
@@ -262,32 +318,14 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
             effort=_optional_string(raw.get("effort"), f"providers.{provider_name}.effort"),
         )
 
-    raw_agents = data.get("agents")
-    if not isinstance(raw_agents, list) or not raw_agents:
-        raise ConfigError("at least one [[agents]] table is required")
-    agents: list[AgentConfig] = []
-    seen_ids: set[str] = set()
-    for index, value in enumerate(raw_agents):
-        raw = _table(value, f"agents[{index}]")
-        agent_id = _id(raw.get("id"), f"agents[{index}].id")
-        if agent_id in seen_ids:
-            raise ConfigError(f"duplicate agent id: {agent_id}")
-        seen_ids.add(agent_id)
-        provider = _nonempty_string(raw.get("provider"), f"agents[{index}].provider")
-        if provider not in SUPPORTED_PROVIDERS:
-            raise ConfigError(f"agents[{index}].provider must be one of {', '.join(sorted(SUPPORTED_PROVIDERS))}")
-        agents.append(
-            AgentConfig(
-                id=agent_id,
-                provider=provider,
-                purpose=_nonempty_string(raw.get("purpose"), f"agents[{index}].purpose"),
-                goal=_nonempty_string(raw.get("goal"), f"agents[{index}].goal"),
-                write_roots=_roots(raw.get("write_roots"), f"agents[{index}].write_roots", allow_empty=False),
-                read_roots=_roots(raw.get("read_roots", []), f"agents[{index}].read_roots"),
-            )
+    if "agents" in data or "pillars" in data:
+        raise ConfigError(
+            "declare agents inside <slug>/pillar.toml; Pillars are discovered, not listed in autodev.toml"
         )
+    from autodev.pillars import discover_pillars
 
-    result_agents = tuple(agents)
+    pillars = discover_pillars(repo_root, overrides=pillar_overrides)
+    result_agents = tuple(agent for pillar in pillars for agent in pillar.agents)
     _validate_ownership(result_agents)
     for agent in result_agents:
         render_session_name(session_pattern, project_id, agent)
@@ -305,4 +343,6 @@ def load_project(value: str | Path | None = None, *, cwd: Path | None = None) ->
         bypass_permissions=bypass_permissions,
         providers=providers,
         agents=result_agents,
+        pillars=pillars,
+        execution=execution,
     )

@@ -61,7 +61,7 @@ def test_setup_launches_all_agents_and_sends_goals(project_repo: Path, tmp_path:
             {
                 "agent": "backend",
                 "worktree": "/tmp/backend",
-                "branch": "autodev/sample-project/backend",
+                "branch": "autodev/sample-project/backend--worker",
                 "session_started": True,
                 "goal_sent": True,
             }

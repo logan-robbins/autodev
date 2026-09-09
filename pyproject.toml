@@ -1,7 +1,7 @@
 [project]
 name = "autodev"
-version = "0.2.0"
-description = "A shared local runtime for autonomous Codex and Claude Code engineering teams"
+version = "1.0.0"
+description = "Native harness sessions governed by Pillar interfaces and individual task ledgers"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "MIT"

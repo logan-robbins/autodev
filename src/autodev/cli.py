@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,15 +18,21 @@ from autodev.config import (
     ProjectConfig,
     load_project,
 )
+from autodev.contracts import verify_pillar
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.pillars import TEMPLATE_ROOT, containing_pillar, pillar_payload
 from autodev.prompts import render_goal
 from autodev.providers import ProviderError, version
+from autodev.scaffold import create_pillar, create_workspace
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
 from autodev.skill_install import install_operator_skill
 from autodev.state import Registry, autodev_home
+from autodev.task_plans import import_plan
+from autodev.tasks import TaskStore
 from autodev.wizard import run_setup_wizard
+from autodev.workspaces import contract_files, validate_committed_contracts
 
 
 def _resolve_project(value: str | None, registry: Registry) -> ProjectConfig:
@@ -54,6 +61,8 @@ def _project_summary(project: ProjectConfig) -> dict[str, Any]:
         "root": str(project.root),
         "descriptor": str(project.descriptor),
         "base_branch": project.base_branch,
+        "execution": project.execution,
+        "pillars": [pillar_payload(pillar) for pillar in project.pillars],
         "session_pattern": project.session_pattern,
         "ui_port": project.ui_port,
         "bypass_permissions": project.bypass_permissions,
@@ -70,6 +79,8 @@ def _project_summary(project: ProjectConfig) -> dict[str, Any]:
 
 
 def _validate_base(project: ProjectConfig) -> None:
+    if project.execution != "git":
+        return
     result = subprocess.run(
         ["git", "rev-parse", "--verify", f"{project.base_branch}^{{commit}}"],
         cwd=project.root,
@@ -86,6 +97,7 @@ def _validate_base(project: ProjectConfig) -> None:
 
 
 def _commit_descriptor(project: ProjectConfig) -> None:
+    paths = contract_files(project)
     branch = subprocess.run(
         ["git", "branch", "--show-current"],
         cwd=project.root,
@@ -99,7 +111,7 @@ def _commit_descriptor(project: ProjectConfig) -> None:
             f"not configured base branch {project.base_branch!r}"
         )
     result = subprocess.run(
-        ["git", "add", "--", DESCRIPTOR_NAME],
+        ["git", "add", "--", *paths],
         cwd=project.root,
         text=True,
         capture_output=True,
@@ -108,7 +120,7 @@ def _commit_descriptor(project: ProjectConfig) -> None:
     if result.returncode:
         raise ConfigError(f"cannot stage {DESCRIPTOR_NAME}: {result.stderr.strip() or 'unknown Git error'}")
     result = subprocess.run(
-        ["git", "commit", "-m", "Configure Autodev", "--", DESCRIPTOR_NAME],
+        ["git", "commit", "-m", "Configure Autodev", "--", *paths],
         cwd=project.root,
         text=True,
         capture_output=True,
@@ -120,25 +132,9 @@ def _commit_descriptor(project: ProjectConfig) -> None:
 
 
 def _validate_descriptor_committed(project: ProjectConfig) -> None:
-    tracked = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", "--", DESCRIPTOR_NAME],
-        cwd=project.root,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    unstaged = subprocess.run(
-        ["git", "diff", "--quiet", "HEAD", "--", DESCRIPTOR_NAME],
-        cwd=project.root,
-        check=False,
-    )
-    staged = subprocess.run(
-        ["git", "diff", "--cached", "--quiet", "HEAD", "--", DESCRIPTOR_NAME],
-        cwd=project.root,
-        check=False,
-    )
-    if tracked.returncode or unstaged.returncode or staged.returncode:
-        raise ConfigError(f"immediate launch requires {DESCRIPTOR_NAME} to be committed on {project.base_branch}")
+    if project.execution != "git":
+        return
+    validate_committed_contracts(project, project.base_branch)
 
 
 def _command_version(command: str, flag: str = "--version") -> str:
@@ -166,16 +162,66 @@ def _add_project_argument(parser: argparse.ArgumentParser, *, required: bool = F
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="autodev",
-        description="Operate installed Codex and Claude Code agents across isolated project worktrees.",
+        description="Run native harnesses in peer Pillars with executable contracts and structured task assignments.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init = subparsers.add_parser("init", help="create a workspace manifest")
+    init.add_argument("directory", type=Path)
+    init.add_argument("--id", required=True)
+    init.add_argument("--name", required=True)
+    init.add_argument("--execution", choices=("filesystem", "git"), default="filesystem")
+    subparsers.add_parser("templates", help="list shipped Harness Agent templates")
+
+    pillar = subparsers.add_parser("pillar", help="discover and operate peer Pillar contracts")
+    pillar_commands = pillar.add_subparsers(dest="pillar_command", required=True)
+    for name in ("list", "show", "locate", "create", "verify"):
+        operation = pillar_commands.add_parser(name)
+        _add_project_argument(operation, required=True)
+        if name in {"show", "create", "verify"}:
+            operation.add_argument("slug")
+        if name == "locate":
+            operation.add_argument("path", type=Path)
+        if name == "create":
+            operation.add_argument("--summary", required=True)
+            operation.add_argument("--template", default="generalist")
+            operation.add_argument("--provider", choices=("codex", "claude"), default="codex")
+            operation.add_argument("--agent", default="worker")
+        if name == "verify":
+            operation.add_argument("--interface", action="store_true")
+
+    task = subparsers.add_parser("task", help="read and update scoped Harness Agent ledgers")
+    task_commands = task.add_subparsers(dest="task_command", required=True)
+    for name in ("list", "show", "create", "import", "claim", "complete", "block", "revise", "progress", "dispatch"):
+        operation = task_commands.add_parser(name)
+        _add_project_argument(operation, required=True)
+        operation.add_argument(
+            "--actor",
+            default=os.environ.get("AUTODEV_AGENT_ID"),
+            help="acting Harness Agent (defaults to session identity)",
+        )
+        if name == "create":
+            operation.add_argument("agent", help="assigned Harness Agent")
+            operation.add_argument("title")
+            operation.add_argument("--depends-on", action="append", default=[])
+        if name in {"create", "revise"}:
+            operation.add_argument("--instructions", default="")
+            operation.add_argument("--acceptance", action="append", required=True)
+        if name in {"show", "complete", "block", "revise", "progress"}:
+            operation.add_argument("task_id")
+        if name == "progress":
+            operation.add_argument("--message", required=True)
+        if name == "block":
+            operation.add_argument("--reason", required=True)
+        if name == "import":
+            operation.add_argument("path", type=Path)
 
     setup = subparsers.add_parser(
         "setup",
         help="interactively configure, register, and optionally launch a project",
     )
-    setup.add_argument("project", nargs="?", help="existing Git repository root (prompted when omitted)")
+    setup.add_argument("project", nargs="?", help="workspace root (prompted when omitted)")
 
     skill = subparsers.add_parser("skill", help="manage the repository-owned operator skill")
     skill_commands = skill.add_subparsers(dest="skill_command", required=True)
@@ -236,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
     active_registry = registry or Registry()
+    if args.command == "init":
+        print(create_workspace(args.directory, project_id=args.id, name=args.name, execution=args.execution))
+        return 0
+    if args.command == "templates":
+        _print_json({"templates": [path.stem for path in sorted(TEMPLATE_ROOT.glob("*.toml"))]})
+        return 0
     if args.command == "skill":
         if args.skill_command != "install":
             raise AssertionError(f"unhandled skill command: {args.skill_command}")
@@ -285,6 +337,79 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             print("no registered projects")
         return 0
     project = _resolve_project(args.project, active_registry)
+    if args.command == "pillar":
+        if args.pillar_command == "list":
+            _print_json({"pillars": [pillar_payload(p) for p in project.pillars]})
+        elif args.pillar_command == "create":
+            print(
+                create_pillar(
+                    project.root,
+                    args.slug,
+                    summary=args.summary,
+                    template=args.template,
+                    provider=args.provider,
+                    agent_id=args.agent,
+                )
+            )
+        elif args.pillar_command == "show":
+            _print_json(pillar_payload(project.pillar(args.slug)))
+        elif args.pillar_command == "locate":
+            path = args.path if args.path.is_absolute() else project.root / args.path
+            print(containing_pillar(project.root, path) / "pillar.toml")
+        elif args.pillar_command == "verify":
+            _print_json({"artifacts": verify_pillar(project.pillar(args.slug), interface_only=args.interface)})
+        return 0
+    if args.command == "task":
+        if not args.actor:
+            raise ConfigError("--actor is required outside a Harness Agent session")
+        bound = os.environ.get("AUTODEV_AGENT_ID")
+        if bound and args.actor != bound:
+            raise ConfigError("a Harness Agent session cannot select another actor")
+        bound_project = os.environ.get("AUTODEV_PROJECT_DESCRIPTOR")
+        if bound_project and Path(bound_project).resolve() != project.descriptor.resolve():
+            raise ConfigError("a Harness Agent session cannot access another workspace's ledgers")
+        actor = project.agent(args.actor)
+        store = TaskStore(project, actor)
+        if args.task_command == "list":
+            result = store.list()
+        elif args.task_command == "show":
+            result = store.get(args.task_id)
+        elif args.task_command == "create":
+            result = store.create(
+                project.agent(args.agent),
+                args.title,
+                instructions=args.instructions,
+                dependencies=tuple(args.depends_on),
+                acceptance=tuple(args.acceptance),
+            )
+        elif args.task_command == "import":
+            result = import_plan(project, actor, args.path)
+        elif args.task_command == "claim":
+            from autodev.workspaces import ensure_workspace
+
+            if not store.active():
+                ensure_workspace(project, actor)
+            result = store.claim()
+        elif args.task_command == "complete":
+            result = store.complete(args.task_id)
+        elif args.task_command == "progress":
+            result = store.progress(args.task_id, args.message)
+        elif args.task_command == "block":
+            result = store.block(args.task_id, args.reason)
+        elif args.task_command == "revise":
+            result = store.revise(args.task_id, instructions=args.instructions, acceptance=tuple(args.acceptance))
+        else:
+            if not store.manager:
+                raise ConfigError("only the Pod's Project Manager may dispatch across its Harness Agents")
+            tasks = store.list()
+            ready = tuple(
+                agent
+                for agent in store.pod.agents
+                if not TaskStore(project, agent).active() and any(t["agent"] == agent.id and t["ready"] for t in tasks)
+            )
+            result = ensure_agents(project, ready, base_ref=None, start=True, send_initial_goal=True)
+        _print_json({"result": result})
+        return 0
     if args.command == "ui":
         serve_project(project)
         return 0
@@ -319,6 +444,9 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
         return 0
     if args.command == "prompt":
         print(render_goal(project, project.agent(args.agent)))
+        return 0
+    if args.command == "merge":
+        print(integrate(project, project.agent(args.agent)))
         return 0
 
     agents = select_agents(project, args.agents)
@@ -372,9 +500,6 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
             for item in result:
                 print(f"{item['agent']}: {'stopped' if item['stopped'] else 'already offline'}")
         return 0
-    if args.command == "merge":
-        print(integrate(project, project.agent(args.agent)))
-        return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
 
@@ -383,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return run(args)
-    except (ConfigError, ProviderError, SessionError, RuntimeError) as exc:
+    except (ConfigError, ProviderError, SessionError, RuntimeError, OSError) as exc:
         print(f"autodev: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

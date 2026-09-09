@@ -1,0 +1,70 @@
+{
+  "type": "object",
+  "required": [
+    "status",
+    "summary",
+    "tasks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "unavailable"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "title",
+          "agent",
+          "instructions",
+          "acceptance",
+          "dependencies"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "agent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "instructions": {
+            "type": "string",
+            "minLength": 1
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

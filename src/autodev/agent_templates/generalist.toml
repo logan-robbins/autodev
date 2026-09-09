@@ -1,0 +1,11 @@
+schema_version = 1
+purpose = "Deliver the assigned capability or artifact."
+instructions = "Complete the assigned task, document evidence, and respect the Pillar interface."
+goal = "Complete one assigned task and deliver a validated result with evidence."
+
+[[deliverables]]
+id = "result"
+path = "output/{agent}/result.json"
+format = "application/json"
+schema = "schemas/result.schema.json"
+description = "A structured result describing the outcome, evidence, and produced artifacts."

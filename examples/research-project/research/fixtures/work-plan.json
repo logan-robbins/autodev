@@ -1,0 +1,28 @@
+{
+  "status": "planned",
+  "summary": "Independent research and source evaluation can proceed concurrently.",
+  "tasks": [
+    {
+      "key": "brief",
+      "title": "Develop a research brief",
+      "agent": "research--researcher",
+      "instructions": "Research a question supplied by the user. Deliver a brief in your owned output directory and its required result envelope. If no question has been supplied, block with that reason.",
+      "acceptance": [
+        "The brief answers the supplied question and cites its sources.",
+        "The result envelope references the brief and verification evidence."
+      ],
+      "dependencies": []
+    },
+    {
+      "key": "sources",
+      "title": "Assess source quality",
+      "agent": "research--reviewer",
+      "instructions": "Independently evaluate relevant source quality for the user-supplied question. Deliver your assessment and required result envelope. Block if the question is missing.",
+      "acceptance": [
+        "The assessment explains source strengths and limitations.",
+        "The result envelope references the assessment and verification evidence."
+      ],
+      "dependencies": []
+    }
+  ]
+}

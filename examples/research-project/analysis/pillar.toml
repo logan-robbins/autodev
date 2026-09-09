@@ -1,0 +1,29 @@
+schema_version = 1
+
+[pillar]
+slug = "analysis"
+summary = "Analyze published research and deliver decision recommendations."
+responsibility = "Analyze published research and deliver decision recommendations."
+
+[interface]
+state = "interface-ready"
+consumption = "Run interface.py for the deterministic unavailable response while developing a consumer. Read the declared output after implementation and validation."
+constraints = "Fixtures support interface development. They do not indicate that business functionality is available."
+inputs = []
+dependencies = ["research"]
+checks = ["{python} interface.py --check"]
+
+[[interface.outputs]]
+id = "result"
+path = "output/analyst/result.json"
+format = "application/json"
+schema = "schemas/result.schema.json"
+fixture = "fixtures/result.json"
+description = "A structured result describing the outcome, evidence, and produced artifacts."
+
+[[agents]]
+id = "analyst"
+template = "analyst"
+provider = "codex"
+write_roots = ["output/analyst/"]
+read_roots = ["schemas/", "fixtures/", "interface.py"]

@@ -1,364 +1,263 @@
 # Autodev
 
-Autodev is a shared local runtime for autonomous engineering agents. One
-Autodev checkout can operate any number of Git repositories elsewhere on the
-machine. A managed repository adds exactly one file, `autodev.toml`; Autodev
-keeps its worktrees, registry, logs, and runtime state outside that repository.
+This is the canonical Autodev v1 design. All authored descriptors use
+`schema_version = 1`.
 
-Autodev does not install, embed, proxy, or authenticate an AI runtime. It starts
-the user's existing `codex` or `claude` executable and inherits that CLI's local
-account, settings, plugins, skills, MCP servers, and model defaults. The launch
-adapters follow the documented [Codex CLI](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
-and [Claude Code CLI](https://code.claude.com/docs/en/cli-usage) interfaces.
+Autodev runs full native coding harnesses—currently Codex and Claude Code—in
+separate tmux sessions, with owned workspaces, executable output contracts, and
+individual task ledgers. Projects can produce software, research, analysis,
+documents, or other artifacts. Git is an optional execution profile.
 
-The Autodev checkout also owns the canonical `autodev-operator` skill. Its
-installer links that committed skill into both clients; it never creates a
-second, drifting local copy.
+Autodev launches the user's installed harness and inherits its authentication,
+tools, extensions, and defaults. It does not implement an LLM reasoning loop or
+install or authenticate providers. Python 3.12, uv, and tmux are required for
+execution; Git is required only for the Git profile. There are no Python runtime
+dependencies.
 
-## Architecture
+## Pillars are capability boundaries
 
 ```text
-one Autodev checkout
-├── Python orchestration and prompt templates
-├── repository-owned operator skill
-├── shared project registry
-├── one localhost UI process and port per active project
-└── AUTODEV_HOME/
-    └── projects/
-        ├── project-a/{worktrees,logs,ui-token}
-        └── project-b/{worktrees,logs,ui-token}
-
-external project-a/                 external project-b/
-└── autodev.toml                     └── autodev.toml
+workspace/
+├── autodev.toml
+├── frontend/
+│   ├── pillar.toml
+│   ├── src/
+│   ├── schemas/
+│   └── tasks/
+│       ├── builder/ledger.json
+│       └── manager/ledger.json
+└── research/
+    ├── pillar.toml
+    ├── fixtures/
+    └── output/
 ```
 
-The project checkout remains the integration worktree. Every configured agent
-gets a dedicated branch, sparse worktree, and namespaced tmux session. With the
-default session pattern, project `acme` and agent `backend` use:
+Every Pillar is a direct child of the workspace root, identified by its slug.
+Its required descriptor is always `<slug>/pillar.toml`. All directories beneath
+it belong to that boundary, however deep. Pillars are peers: intermediate
+organizational directories and nested Pillars are rejected. Invalid descriptors
+remain declared boundaries and produce validation errors.
 
-- Branch: `autodev/acme/backend`
-- Session: `autodev-acme-backend`
-- Worktree: `$AUTODEV_HOME/projects/acme/worktrees/backend`
+The workspace manifest does not duplicate a list of Pillars. Autodev discovers
+root descriptors, excluding `.git`, `.venv`, `node_modules`, `__pycache__`, and
+`.autodev`. Discovery rejects misplaced descriptors outside those excluded
+runtime/dependency directories. Symlinks cannot relocate boundaries or declared
+artifact paths.
 
-The default state root is `~/.local/state/autodev`. Set `AUTODEV_HOME` to move
-all generated runtime state. Nothing from the Autodev source checkout is copied
-into managed projects.
+Each Pillar has one implicit **Pod**, with at least one **Harness Agent** based
+on a template. There is no Pod declaration and no required manager. An optional
+`project-manager` template gives one Harness Agent the ability to read and tend
+the individual ledgers across its own Pod. Each worker reads its own tasks,
+delivers its outputs, and updates its own ledger.
 
-## Requirements
+See [the ontology](docs/ontology.md) for the exact terms and
+[the contract reference](docs/contracts.md) for descriptor fields.
 
-- Python 3.12
-- `uv`
-- Git
-- tmux
-- An installed and authenticated `codex` or `claude` CLI
+## Create a workspace and its first interface
 
-Only the providers named by a project's agents are required. Autodev has no
-runtime Python dependencies.
-
-## Quick start
-
-Clone and prepare the single shared checkout:
+From the shared Autodev checkout:
 
 ```sh
-git clone https://github.com/logan-robbins/autodev.git /path/to/autodev
-cd /path/to/autodev
 uv sync --locked --python 3.12
-uv run autodev skill install
+uv run autodev init /path/to/workspace --id my-project --name "My Project"
+uv run autodev pillar create /path/to/workspace research \
+  --summary "Produce research reports with traceable evidence." \
+  --template researcher --agent researcher
+uv run autodev validate /path/to/workspace --json
+uv run autodev pillar verify /path/to/workspace research --interface
+uv run autodev register /path/to/workspace
 ```
 
-`skill install` creates personal symlinks at
-`~/.agents/skills/autodev-operator` for Codex and
-`~/.claude/skills/autodev-operator` for Claude Code. Both point to
-`src/autodev/skills/autodev-operator` in this checkout, so a later Git pull
-updates both clients. It refuses to replace an existing file, directory,
-different link, or broken link. These locations follow the documented
-[Codex skill](https://learn.chatgpt.com/docs/build-skills) and
-[Claude skill](https://code.claude.com/docs/en/slash-commands) conventions.
+Use `uv run --project /path/to/autodev autodev ...` from elsewhere. The
+interactive alternative is `uv run autodev setup /path/to/workspace`.
 
-Start a fresh Codex or Claude session in the repository you want to manage and
-invoke the skill:
+`pillar create` writes a complete, validated interface: `pillar.toml`, schemas,
+fixtures, and a runnable `interface.py` that returns an explicit unavailable
+response. It refuses to replace an existing directory. To adopt existing
+content, author `pillar.toml` and its referenced files in that directory, then
+validate. The files in [the example workspace](examples/research-project) show
+this structure, including an optional Project Manager and multiple workers.
+
+A newly created Pillar is `interface-ready`. Consumers can develop against its
+fixtures while implementation proceeds. To declare `implementation-ready`,
+provide the real declared outputs, replace or extend the checks with meaningful
+implementation and consumer checks, and update the descriptor. `pillar verify`
+without `--interface` requires implementation readiness and real outputs.
+
+## Agent-native contracts
+
+`pillar.toml` combines machine-readable declarations with a short natural-language
+introduction: summary, responsibility, consumption instructions, constraints,
+and descriptions of each input and output. A consumer can find and understand
+the interface without exploring the implementation.
+
+Output paths, schema paths, fixture paths, and agent ownership paths are
+relative to the Pillar root. Workspace context paths are relative to the
+workspace root. Every JSON artifact requires a schema; every public output
+requires a fixture. Interface checks are explicit commands, run from the Pillar
+root. `{python}` expands to Autodev's interpreter.
+
+Dependencies name peer slugs and consume their current canonical contracts. Publication checks
+all Pillar interfaces and all implementation-ready outputs, including consumer
+checks declared by peers. These are executable gates over declared behavior;
+Autodev cannot prove behavior omitted from those checks.
+
+Schemas use the strict vocabulary documented in [docs/contracts.md](docs/contracts.md).
+Unsupported keywords fail validation rather than being silently ignored. External
+formats and richer behavior can be checked with the declared commands.
+
+## Templates and individual task ledgers
+
+List shipped templates:
 
 ```sh
-cd /path/to/project
-codex
-# In Codex: $autodev-operator Set up Autodev for this repository.
-
-claude
-# In Claude: /autodev-operator Set up Autodev for this repository.
+uv run autodev templates
 ```
 
-That existing conversation is the operator. It inspects the repository,
-designs non-overlapping worker boundaries, creates and commits `autodev.toml`,
-registers the project, checks local prerequisites, prepares worktrees, launches
-the configured Codex or Claude worker sessions in tmux, sends their standing
-goals, confirms status, and gives the exact project UI command and URL. Autodev
-does not launch a separate "boss" session.
+Available templates are `generalist`, `researcher`, `engineer`, `analyst`, and
+`project-manager`. Templates specify purpose, instructions, standing goal, and
+deterministic deliverables. An instance selects a provider, local ID, and owned
+paths. Custom templates can live inside their Pillar and be referenced by a
+relative TOML path. Runtime identities use `<pillar>--<agent>`; `--` is reserved
+and cannot occur within a slug or local ID.
 
-For a human-driven alternative, run the CLI wizard. It walks through the
-project root, integration branch, instructions, verification commands, worker
-ownership, installed provider settings, tmux naming, permission policy, and the
-dedicated UI port:
+Each agent's canonical ledger lives at `<pillar>/tasks/<agent>/ledger.json`.
+Ledgers are accessed through atomic runtime operations and excluded from execution
+copies and Git worktree changes. Only a Project Manager has a Pod-wide ledger
+view. Workers receive their own view; other Pods' internal ledgers are outside
+both roles' scope. The local CLI and UI are trusted operator tools: role scopes
+are workflow boundaries, not an OS sandbox for a harness with host access.
+
+A Project Manager creates tasks, imports plans, revises queued or blocked work,
+and reads completion evidence. A Pod without a manager permits agents to tend
+their own assignments. No manager is manufactured for a single-agent Pillar.
+
+For the example workspace's research Pod:
 
 ```sh
-uv run --project /path/to/autodev autodev setup /path/to/project
+# PM imports a structured plan into each worker's own ledger.
+uv run autodev task import /path/to/workspace \
+  /path/to/workspace/research/fixtures/work-plan.json --actor research--manager
+
+# PM inspects the Pod and starts/nudges workers with ready tasks.
+uv run autodev task list /path/to/workspace --actor research--manager
+uv run autodev task dispatch /path/to/workspace --actor research--manager
+
+# These operations are performed by the worker itself.
+uv run autodev task list /path/to/workspace --actor research--researcher
+uv run autodev task claim /path/to/workspace --actor research--researcher
+uv run autodev task complete /path/to/workspace TASK_ID --actor research--researcher
+uv run autodev task block /path/to/workspace TASK_ID \
+  --actor research--researcher --reason "The requested source is unavailable."
 ```
 
-Omit `/path/to/project` to select it in the wizard. After either setup path,
-validate the descriptor and host tools at any time:
+The session binds its own actor identity, so `--actor` may be omitted inside the
+harness. Outside a session it is required. A session cannot select another actor
+or another project's ledger through the task CLI.
+
+Task plans require unique local keys, existing agents in the manager's Pod,
+instructions, acceptance criteria, and acyclic dependencies. Imports resolve
+forward references and are idempotent. Updates to multiple ledgers use a recovery
+journal so an interrupted import is completed before the next ledger access.
+
+Workers claim at most one task at a time. Independent tasks can run concurrently;
+dependencies become ready when their producing workers record completion.
+`task complete` validates the required artifacts, runs checks, publishes owned
+changes, and records delivery evidence in the worker's ledger. Failures leave the
+task running for correction. Workers use `task block` to record an impediment;
+the PM uses `task revise` to update instructions and acceptance criteria and
+return queued/blocked work to the queue. There is no Orchestrator acceptance
+queue. The harness reads its ledger again after completion and continues with
+its next ready task. `goal` or PM `dispatch` can nudge an idle session after new
+assignments arrive; Autodev does not run a background polling scheduler.
+
+The Project Manager template is in
+[src/autodev/agent_templates/project-manager.toml](src/autodev/agent_templates/project-manager.toml).
+It maintains ledgers and produces `task-plan.json`; it does not do its workers'
+implementation or mark their tasks complete. Cross-Pod coordination uses public
+Pillar contracts and outputs.
+
+## Harness execution and publication
 
 ```sh
-uv run --project /path/to/autodev autodev validate /path/to/project
-uv run --project /path/to/autodev autodev doctor /path/to/project
+uv run autodev doctor /path/to/workspace --json
+uv run autodev ensure /path/to/workspace --no-start
+uv run autodev ensure /path/to/workspace --send-goal
+uv run autodev status /path/to/workspace --json
+uv run autodev goal /path/to/workspace research--researcher
+uv run autodev stop /path/to/workspace
 ```
 
-Create all worktrees, start their installed CLIs, and submit each standing
-goal:
+`ensure --send-goal` supplies the worker's operating contract and scoped ledger
+view. The worker claims its own task; startup does not invent an assignment.
+Existing sessions are reused. Stopping preserves workspaces and ledgers.
 
-```sh
-uv run --project /path/to/autodev autodev ensure /path/to/project --send-goal
-uv run --project /path/to/autodev autodev status /path/to/project
-```
+The default `filesystem` profile creates a separate execution copy for each
+Harness Agent containing its owned paths, explicit read context, and public
+contracts. Publication detects edits outside ownership and conflicts with
+changes in the canonical workspace. It verifies a combined candidate against
+all Pillar checks before replacing owned files, with rollback on write errors.
+Runtime publications serialize; arbitrary external readers of a multi-file
+output should use its completed delivery record as the readiness signal.
 
-`ensure` automatically registers the project with the shared runtime. It reuses
-existing worktrees and tmux sessions; it never replaces live agents. Setup
-requires a clean repository with an initial commit. The descriptor must be
-committed to the configured integration branch before immediate launch so every
-new agent worktree starts with the same project contract.
+The `git` profile uses sparse Git worktrees and dedicated branches. Set
+`project.execution = "git"` and `project.base_branch` to an existing local
+branch. The workspace must be the repository root. Commit the workspace manifest
+and every Pillar's descriptors, schemas, fixtures, and relevant source before
+launching. Workers commit their own verified changes before `task complete`.
+Integration requires clean source and base worktrees, owned branch changes,
+whitespace checks, and contract checks on the combined result. Failed integration
+is aborted. A successful merge refreshes the worker branch.
 
-## The project descriptor
+`runtime.bypass_permissions` is a required boolean. False preserves the native
+harness's configured behavior. True passes that provider's explicit bypass flag
+to its managed sessions. Autodev never changes global provider settings.
 
-`autodev.toml` is the complete project adapter. There are no project-local
-Autodev templates, generated capsules, launch scripts, or copied skills.
+Runtime copies, Git worktrees, session logs, registry, and transaction locks live
+under `AUTODEV_HOME`, otherwise `$XDG_STATE_HOME/autodev`, otherwise
+`~/.local/state/autodev`. Authored contracts and per-agent ledgers belong to their
+Pillar workspaces. Memory implementation is deliberately deferred.
 
-```toml
-schema_version = 2
+## Local UI and operator skill
 
-[project]
-id = "acme-app"
-name = "Acme App"
-base_branch = "main"
-instructions = "Use uv for Python and preserve the public HTTP contract."
-context_roots = ["docs/", "contracts/", "pyproject.toml", "uv.lock"]
-verify_commands = ["uv run pytest"]
+`uv run autodev ui PROJECT` serves one project at `127.0.0.1` on its configured
+port. The main page shows Pillar cards with their work and session status, without
+repeating the same counts in scorecards. Navigation follows Workspace → Pillar →
+Harness Agent: selecting a Pillar expands its agents in the sidebar and opens its
+graph. Task board, agent list, and contract are views within that Pillar. Agent
+details show the current assignment, execution stages, dependencies, delivery
+evidence, and on-demand session output. Workspace-wide tasks and activity remain
+secondary views. Pod is an internal grouping, not a user-facing navigation level.
 
-[runtime]
-session_pattern = "autodev-{project}-{agent}"
-ui_port = 8765
-bypass_permissions = false
+The trusted human operator can observe all Pods. This does not broaden a Harness
+Agent's scoped ledger API. Fleet observation refreshes every two seconds, using
+one tmux session query and one ledger read per Pod per snapshot. Unchanged views
+retain their state; failed refreshes show an explicit disconnected warning.
+A claimed task with an offline session is marked interrupted. The UI reports
+recorded work stages, not inferred model thoughts or completion percentages.
 
-[providers.codex]
-model = "gpt-5.6-terra"
-effort = "high"
+Workers can report meaningful steps with `task progress PROJECT TASK_ID --actor
+PILLAR--AGENT --message "Current step and outcome"`. Completion automatically
+records validation, publication, and delivery events. The worker still controls
+its task state; moving cards manually cannot bypass contract checks.
 
-[providers.claude]
-model = "sonnet"
-effort = "high"
+The clearly labeled 60-agent demonstration runs a finite browser-only scenario:
+six distinct Pillars and 180 assignments, with dependency-aware claims, validation,
+publication, blockers, recovery, and downstream handoffs. Pause, step, change speed,
+or restart playback. The session transcript is explicitly simulated. Runtime
+controls stay disabled: no real tasks, files, or harness sessions are created.
+A `?demo=1` link preserves demo mode on reload; exiting returns to live observations.
+Run `node --test tests/web/demo.test.cjs` to verify the scenario's invariants.
 
-[[agents]]
-id = "backend"
-provider = "codex"
-purpose = "Own the backend service and its tests."
-goal = "Take the highest-priority actionable backend task and complete one verified vertical change."
-write_roots = ["src/backend/", "tests/backend/"]
-read_roots = ["src/shared/"]
+Configuration edits target `autodev.toml` or a Pillar descriptor, with validation
+before replacement. Fleet telemetry, session output, and mutations require the
+project token, stored with mode `0600` in external runtime state. All frontend
+assets are packaged locally; no web CDN or frontend build is required.
 
-[[agents]]
-id = "frontend"
-provider = "claude"
-purpose = "Own the browser application and its tests."
-goal = "Take the highest-priority actionable frontend task and complete one verified vertical change."
-write_roots = ["src/frontend/", "tests/frontend/"]
-read_roots = ["src/shared/"]
-```
-
-A complete two-provider example is available at
-[`examples/autodev.toml`](examples/autodev.toml).
-
-### Project fields
-
-- `id`: Stable lowercase identifier used in branches, sessions, and state.
-- `name`: Human-readable display name.
-- `base_branch`: Local integration branch. It must already resolve to a commit.
-- `instructions`: Project-wide architecture and operating law included in every
-  agent goal.
-- `context_roots`: Shared read-only paths added to every sparse worktree.
-- `verify_commands`: Canonical commands agents are instructed to run.
-
-### Runtime fields
-
-- `session_pattern`: tmux name template. It must contain `{project}` and
-  `{agent}` exactly once; `{provider}` is optional. The rendered name may use
-  letters, numbers, underscores, and hyphens, with a 100-character limit.
-- `ui_port`: Dedicated localhost port for this project's UI, from 1024 through
-  65535. The setup wizard selects the first available, unregistered port at or
-  above 8765.
-- `bypass_permissions`: Required boolean controlling every worker launched for
-  this project. When true, Autodev passes Codex
-  `--dangerously-bypass-approvals-and-sandbox` or Claude
-  `--dangerously-skip-permissions`. It never changes global client settings.
-
-The default is `autodev-{project}-{agent}`. For example,
-`team_{provider}_{project}_{agent}` renders as
-`team_codex_acme-app_backend`.
-
-Autodev automatically includes common root context when it exists:
-`README.md`, `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `.agents/skills/`,
-`.codex/`, `.claude/`, `.gitignore`, and `autodev.toml`.
-
-### Provider fields
-
-Provider tables are optional. When a field is omitted, the installed CLI uses
-its own local default.
-
-- `command`: Executable name or absolute path. Defaults to `codex` or `claude`.
-- `model`: Optional model alias or identifier passed directly to the CLI.
-- `effort`: Optional reasoning/effort value passed directly to the CLI.
-
-There is no provider fallback. If the selected executable or configuration is
-unavailable, startup fails with a specific error.
-
-### Agent fields
-
-- `id`: Stable lowercase agent identifier.
-- `provider`: Exactly `codex` or `claude`.
-- `purpose`: The mechanism this agent owns.
-- `goal`: The standing task-selection contract for each pass.
-- `write_roots`: Non-empty, relative ownership paths.
-- `read_roots`: Additional context paths this agent may inspect but not modify.
-
-Write roots cannot be absolute, escape the repository, own `autodev.toml`, or
-overlap another agent's roots. Sparse checkout limits visible source, while
-`status` and `merge` independently reject edits outside declared ownership.
-
-## Operating commands
-
-All commands accept a repository directory, an `autodev.toml` path, or a
-registered project ID. When run inside a managed repository, read-only commands
-can discover the nearest descriptor automatically.
-
-```sh
-# Walk through configuration, registration, and optional launch.
-uv run --project /path/to/autodev autodev setup /path/to/project
-
-# Start this project's UI on runtime.ui_port.
-uv run --project /path/to/autodev autodev ui my-project
-
-# Prepare worktrees without starting agents.
-uv run --project /path/to/autodev autodev ensure /path/to/project --no-start
-
-# Start or reuse selected agents and send their goals.
-uv run --project /path/to/autodev autodev ensure my-project backend frontend --send-goal
-
-# Print a goal without sending it, then send it to a live session.
-uv run --project /path/to/autodev autodev goal my-project backend --dry-run
-uv run --project /path/to/autodev autodev goal my-project backend
-
-# Inspect machine-readable runtime, Git, and ownership state.
-uv run --project /path/to/autodev autodev status my-project --json
-
-# Stop sessions without deleting their branches or worktrees.
-uv run --project /path/to/autodev autodev stop my-project
-
-# Merge one clean, committed, ownership-valid agent branch into the base.
-uv run --project /path/to/autodev autodev merge my-project backend
-```
-
-Permission behavior has one source of truth: `runtime.bypass_permissions` in
-the project descriptor. `false` retains each CLI's configured behavior. `true`
-removes the selected provider's worker-level permission controls and should be
-used only when the operator intentionally authorizes unrestricted execution in
-an appropriately isolated environment. Codex documents the bypass as dangerous
-full access, and Claude recommends bypass mode only in isolated environments;
-Autodev therefore scopes it to managed workers instead of weakening unrelated
-[Codex](https://learn.chatgpt.com/docs/codex/security) or
-[Claude](https://code.claude.com/docs/en/permission-modes) sessions globally.
-
-`merge` fails unless the agent worktree is clean, its complete branch diff is
-inside its write roots, the integration checkout is clean and on
-`project.base_branch`, and Git's whitespace check passes. Merge conflicts stay
-on the agent branch for explicit resolution and re-verification.
-
-## Per-project UI
-
-Register projects explicitly when they have not been started yet:
-
-```sh
-uv run --project /path/to/autodev autodev register /path/to/project-a
-uv run --project /path/to/autodev autodev register /path/to/project-b
-uv run --project /path/to/autodev autodev projects
-```
-
-Each project starts an independent UI bound to `127.0.0.1` on its configured
-`runtime.ui_port`. The page exposes only that project, including agent launch,
-goal, stop, Git state, ownership state, and an editor for the complete
-`autodev.toml`, including worker definitions, tmux naming, UI port, and
-permission policy.
-
-Run one UI in the foreground:
-
-```sh
-uv run --project /path/to/autodev autodev ui my-project
-```
-
-Or keep it running as a logged background process using the default state root:
-
-```sh
-mkdir -p ~/.local/state/autodev/projects/my-project/logs
-nohup uv run --project /path/to/autodev autodev ui my-project \
-  >~/.local/state/autodev/projects/my-project/logs/ui.log 2>&1 &
-```
-
-Start another project's UI with `autodev ui other-project`; its descriptor
-selects a different port. Configuration saves are parsed and fully validated
-before an atomic replacement. The running UI refuses a `project.id` change,
-and a changed `ui_port` takes effect after restarting that UI. Saved changes
-remain visible as an ordinary Git modification and must be reviewed and
-committed normally.
-
-Mutating API requests require the project-scoped bearer token stored with mode
-`0600` at `$AUTODEV_HOME/projects/<project-id>/ui-token`. The token is embedded
-only into that project's localhost page. This is a local operator boundary,
-not a hosted multi-user service.
-
-## Updating the shared runtime
-
-Version 0.2 uses descriptor schema 2. Upgrade an existing schema-1 descriptor
-by changing `schema_version` to `2` and adding an explicit
-`runtime.bypass_permissions = false` or `true`; schema-1 descriptors fail fast.
-
-Pull once in the Autodev checkout, then apply the schema update to each managed
-project descriptor:
-
-```sh
-git -C /path/to/autodev pull --ff-only
-uv sync --project /path/to/autodev --locked --python 3.12
-```
-
-Every subsequent `uv run --project /path/to/autodev autodev ...` invocation
-uses the updated core. Existing agent worktrees and sessions remain under
-`AUTODEV_HOME`. The installed Codex and Claude skill links already point into
-that checkout, so no skill reinstall is needed after a pull.
-
-## Debugging
-
-```sh
-# Check exact host tool and selected provider versions.
-uv run --project /path/to/autodev autodev doctor my-project --json
-
-# Inspect sessions and attach using the rendered session name.
-tmux list-sessions
-tmux attach-session -t autodev-my-project-backend
-
-# Inspect one agent's persistent pane log.
-tail -n 200 "$AUTODEV_HOME/projects/my-project/logs/backend.log"
-
-# Inspect all Git worktrees owned by the managed repository.
-git -C /path/to/project worktree list --porcelain
-```
-
-If startup reports a missing provider, install and authenticate that CLI
-outside Autodev, verify `codex --version` or `claude --version`, then retry.
-Autodev never repairs or replaces a user's agent installation.
+`uv run autodev skill install` links the canonical operator skill into the user's
+Codex and Claude skill directories. It refuses to replace existing incompatible
+paths. The user's current conversation is the Orchestrator; it coordinates
+Pillars and interfaces, while PM harnesses tend their Pod's individual ledgers.
 
 ## Development
 
@@ -368,11 +267,9 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 uv run autodev --help
+uv build
 ```
 
-Tests use disposable Git repositories. The tmux integration test substitutes a
-test-only executable and never contacts an AI provider.
-
-## License
-
-MIT
+Tests use disposable directories and Git repositories. Native-session tests run
+fake harness executables inside real tmux sessions and never contact AI services.
+The license is MIT.

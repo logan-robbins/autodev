@@ -1,0 +1,39 @@
+schema_version = 1
+
+[pillar]
+slug = "research"
+summary = "Produce evidence-backed research briefs and independent source reviews."
+responsibility = "Produce evidence-backed research briefs and independent source reviews."
+
+[interface]
+state = "interface-ready"
+consumption = "Run interface.py for the deterministic unavailable response while developing a consumer. Read the declared output after implementation and validation."
+constraints = "Fixtures support interface development. They do not indicate that business functionality is available."
+inputs = []
+dependencies = []
+checks = ["{python} interface.py --check"]
+
+[[interface.outputs]]
+id = "result"
+path = "output/researcher/result.json"
+format = "application/json"
+schema = "schemas/result.schema.json"
+fixture = "fixtures/result.json"
+description = "A structured result describing the outcome, evidence, and produced artifacts."
+
+[[agents]]
+id = "researcher"
+template = "researcher"
+provider = "codex"
+write_roots = ["output/researcher/"]
+read_roots = ["schemas/", "fixtures/", "interface.py"]
+
+[[agents]]
+id = "reviewer"
+template = "researcher"
+provider = "claude"
+
+[[agents]]
+id = "manager"
+template = "project-manager"
+provider = "codex"

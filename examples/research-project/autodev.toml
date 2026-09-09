@@ -1,0 +1,15 @@
+schema_version = 1
+
+[project]
+id = "research-example"
+name = "Research and Analysis"
+execution = "filesystem"
+base_branch = "main"
+instructions = "Honor Pillar boundaries and publish verified deliverables through their declared interfaces."
+context_roots = []
+verify_commands = []
+
+[runtime]
+session_pattern = "autodev-{project}-{agent}"
+ui_port = 8765
+bypass_permissions = false

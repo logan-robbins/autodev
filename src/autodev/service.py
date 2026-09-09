@@ -15,10 +15,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from autodev.config import ConfigError, ProjectConfig, load_project
+from autodev.fleet import FleetMonitor, agent_output
 from autodev.integrate import integrate
 from autodev.operations import ensure_agents, select_agents, statuses, stop_agents
+from autodev.pillars import pillar_payload
 from autodev.sessions import send_goal
 from autodev.state import project_paths
+from autodev.tasks import TaskStore
 
 LOOPBACK_HOST = "127.0.0.1"
 MAX_BODY_BYTES = 1_000_000
@@ -39,6 +42,8 @@ def _control_token(project: ProjectConfig, *, home: Path | None = None) -> str:
 
 
 def _descriptor_dirty(project: ProjectConfig) -> bool:
+    if project.execution != "git":
+        return False
     result = subprocess.run(
         ["git", "status", "--porcelain", "--", project.descriptor.name],
         cwd=project.root,
@@ -58,6 +63,8 @@ def _project_payload(project: ProjectConfig) -> dict[str, Any]:
         "root": str(project.root),
         "descriptor": str(project.descriptor),
         "base_branch": project.base_branch,
+        "execution": project.execution,
+        "pillars": [pillar_payload(pillar) for pillar in project.pillars],
         "ui_port": project.ui_port,
         "session_pattern": project.session_pattern,
         "bypass_permissions": project.bypass_permissions,
@@ -94,51 +101,35 @@ def _save_config(descriptor: Path, content: str, *, project_id: str) -> ProjectC
     return load_project(descriptor)
 
 
+def _save_pillar(project: ProjectConfig, slug: str, content: str) -> ProjectConfig:
+    target = project.pillar(slug).descriptor
+    load_project(project.descriptor, pillar_overrides={slug: content})
+    handle, name = tempfile.mkstemp(prefix=".pillar-", suffix=".toml", dir=target.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(target.stat().st_mode & 0o777)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return load_project(project.descriptor)
+
+
 def _dashboard(project: ProjectConfig, token: str) -> str:
-    safe_token = json.dumps(token)
-    safe_title = json.dumps(project.name)
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Autodev · {escape(project.name)}</title><style>
-body{{font:15px system-ui,sans-serif;margin:0;background:#101418;color:#e9eef2}}main{{max-width:1100px;margin:36px auto;padding:0 24px}}
-h1{{font-size:30px;margin-bottom:4px}}.panel{{background:#192027;border:1px solid #303b44;border-radius:12px;padding:18px;margin:18px 0}}
-table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px;border-bottom:1px solid #303b44}}button{{margin:4px;padding:7px 12px}}
-.ok{{color:#72d39a}}.off{{color:#f1b86a}}.error{{color:#ff7b72}}code{{color:#a9d5ff}}textarea{{box-sizing:border-box;width:100%;min-height:480px;
-background:#0d1117;color:#d8e2ea;border:1px solid #44515c;border-radius:8px;padding:14px;font:13px ui-monospace,monospace;line-height:1.45}}
-#message{{min-height:22px}}.meta{{color:#aab6bf}}</style></head><body><main><h1 id="title"></h1><p class="meta" id="meta">Loading…</p>
-<section class="panel"><h2>Agents</h2><div id="agents">Loading…</div></section>
-<section class="panel"><h2>Project configuration</h2><p>Edit the canonical <code>autodev.toml</code>. Saves are validated and atomic; commit accepted changes in Git.</p>
-<textarea id="config" spellcheck="false"></textarea><p><button onclick="saveConfig()">Validate and save</button></p><p id="message"></p></section>
-</main><script>
-const token={safe_token}; const initialTitle={safe_title};
-const esc=value=>String(value).replace(/[&<>"']/g,char=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
-async function request(path, options={{}}){{
-  const response=await fetch(path,options); const data=await response.json();
-  if(!response.ok) throw new Error(data.error||`HTTP ${{response.status}}`); return data;
-}}
-async function action(action, agent){{
-  try{{await request(`/api/actions/${{action}}`,{{method:'POST',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{agents:[agent],send_goal:true}})}});await loadProject();}}
-  catch(error){{document.getElementById('message').textContent=error.message;}}
-}}
-async function loadProject(){{
-  const p=await request('/api/project'); document.title=`Autodev · ${{p.name}}`; document.getElementById('title').textContent=p.name||initialTitle;
-  document.getElementById('meta').textContent=`${{p.root}} · port ${{p.ui_port}} · config ${{p.config_dirty?'modified':'committed'}}`;
-  document.getElementById('agents').innerHTML=`<table><thead><tr><th>Agent</th><th>Provider</th><th>Session</th><th>Git</th><th>Actions</th></tr></thead><tbody>${{p.agents.map(a=>
-    `<tr><td>${{esc(a.agent)}}</td><td>${{esc(a.provider)}}</td><td class="${{a.running?'ok':'off'}}">${{a.running?'running':'offline'}}<br><code>${{esc(a.session)}}</code></td><td>${{a.ownership_violations.length?'VIOLATION':(a.git_status?'dirty':'clean')}}</td><td><button onclick="action('ensure','${{a.agent}}')">Launch</button><button onclick="action('goal','${{a.agent}}')">Goal</button><button onclick="action('stop','${{a.agent}}')">Stop</button></td></tr>`).join('')}}</tbody></table>`;
-}}
-async function loadConfig(){{const data=await request('/api/config');document.getElementById('config').value=data.content;}}
-async function saveConfig(){{const message=document.getElementById('message');message.textContent='Validating…';try{{
-  await request('/api/config',{{method:'PUT',headers:{{'Authorization':`Bearer ${{token}}`,'Content-Type':'application/json'}},body:JSON.stringify({{content:document.getElementById('config').value}})}});
-  message.textContent='Saved. Commit autodev.toml in Git; restart this UI if ui_port changed.';await loadProject();
-}}catch(error){{message.textContent=error.message;}}}}
-Promise.all([loadProject(),loadConfig()]).catch(error=>document.getElementById('message').textContent=error.message);setInterval(loadProject,5000);
-</script></body></html>"""
+    template = (Path(__file__).parent / "web/index.html").read_text(encoding="utf-8")
+    return template.replace("__PROJECT_TITLE__", escape(project.name)).replace(
+        "__BOOTSTRAP__", json.dumps({"token": token, "name": project.name}).replace("<", "\\u003c")
+    )
 
 
 class ProjectUIHandler(BaseHTTPRequestHandler):
     descriptor: Path
     project_id: str
     token: str
+    monitor: FleetMonitor
 
     def _project(self) -> ProjectConfig:
         project = load_project(self.descriptor)
@@ -157,7 +148,7 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > MAX_BODY_BYTES:
+        if length < 0 or length > MAX_BODY_BYTES:
             raise ValueError("request body is too large")
         if not length:
             return {}
@@ -175,8 +166,29 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = urlparse(self.path).path.rstrip("/") or "/"
         try:
+            if path == "/api/fleet":
+                if self._authorized():
+                    self._json(HTTPStatus.OK, self.monitor.snapshot())
+                return
+            if path.startswith("/assets/"):
+                assets = {"app.js": "text/javascript", "demo.js": "text/javascript", "style.css": "text/css"}
+                name = path.removeprefix("/assets/")
+                if name not in assets:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    return
+                body = (Path(__file__).parent / "web" / name).read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", assets[name])
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             project = self._project()
-            if path == "/":
+            if path.startswith("/api/agents/") and path.endswith("/output"):
+                if self._authorized():
+                    self._json(HTTPStatus.OK, agent_output(project, path.split("/")[3]))
+            elif path == "/":
                 body = _dashboard(project, self.token).encode()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -186,8 +198,14 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             elif path == "/api/project":
                 self._json(HTTPStatus.OK, _project_payload(project))
+            elif path.startswith("/api/ledgers/"):
+                actor = project.agent(path.split("/")[-1])
+                self._json(HTTPStatus.OK, {"tasks": TaskStore(project, actor).list()})
             elif path == "/api/config":
                 self._json(HTTPStatus.OK, _config_payload(project))
+            elif path.startswith("/api/pillars/") and path.endswith("/config"):
+                slug = path.split("/")[3]
+                self._json(HTTPStatus.OK, {"content": project.pillar(slug).descriptor.read_text(encoding="utf-8")})
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except (ConfigError, OSError, RuntimeError) as exc:
@@ -196,14 +214,21 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if not self._authorized():
             return
-        if urlparse(self.path).path.rstrip("/") != "/api/config":
+        path = urlparse(self.path).path.rstrip("/")
+        is_pillar = path.startswith("/api/pillars/") and path.endswith("/config") and len(path.split("/")) == 5
+        if path != "/api/config" and not is_pillar:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         try:
             content = self._body().get("content")
             if not isinstance(content, str):
                 raise TypeError("content must be a TOML string")
-            project = _save_config(self.descriptor, content, project_id=self.project_id)
+            project = (
+                _save_pillar(self._project(), path.split("/")[3], content)
+                if is_pillar
+                else _save_config(self.descriptor, content, project_id=self.project_id)
+            )
+            self.monitor.invalidate()
             self._json(HTTPStatus.OK, {"project": _project_payload(project)})
         except (ConfigError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -242,6 +267,7 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": f"unknown action: {action}"})
                 return
+            self.monitor.invalidate()
             self._json(HTTPStatus.OK, {"result": result})
         except (ConfigError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -254,7 +280,12 @@ def project_ui_handler(project: ProjectConfig, token: str) -> type[ProjectUIHand
     return type(
         "BoundProjectUIHandler",
         (ProjectUIHandler,),
-        {"descriptor": project.descriptor, "project_id": project.id, "token": token},
+        {
+            "descriptor": project.descriptor,
+            "project_id": project.id,
+            "token": token,
+            "monitor": FleetMonitor(project.descriptor, project.id),
+        },
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -23,26 +24,38 @@ def git(cwd: Path, *args: str) -> str:
 def test_integrates_clean_owned_agent_commit(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     project = load_project(project_repo)
-    agent = project.agent("backend")
+    agent = project.agent("backend--worker")
     workspace = ensure_workspace(project, agent)
-    target = workspace.path / "src" / "backend" / "app.py"
+    target = workspace.path / "backend" / "src" / "app.py"
     target.write_text("VALUE = 2\n", encoding="utf-8")
-    git(workspace.path, "add", "src/backend/app.py")
+    output = workspace.path / "backend/output/worker/result.json"
+    output.parent.mkdir(parents=True)
+    output.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "summary": "Updated backend",
+                "evidence": ["Verified app value"],
+                "artifacts": ["src/app.py"],
+            }
+        )
+    )
+    git(workspace.path, "add", "backend/src/app.py", "backend/output/worker/result.json")
     git(workspace.path, "commit", "-m", "Update backend")
 
     message = integrate(project, agent)
 
-    assert message == "merged autodev/sample-project/backend into main and refreshed its worktree"
-    assert (project_repo / "src" / "backend" / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert message == "merged autodev/sample-project/backend--worker into main and refreshed its worktree"
+    assert (project_repo / "backend" / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
     assert git(project_repo, "status", "--porcelain") == ""
 
 
 def test_rejects_uncommitted_agent_work(project_repo: Path, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AUTODEV_HOME", str(tmp_path / "state"))
     project = load_project(project_repo)
-    agent = project.agent("backend")
+    agent = project.agent("backend--worker")
     workspace = ensure_workspace(project, agent)
-    (workspace.path / "src" / "backend" / "app.py").write_text("VALUE = 3\n", encoding="utf-8")
+    (workspace.path / "backend" / "src" / "app.py").write_text("VALUE = 3\n", encoding="utf-8")
 
     with pytest.raises(IntegrationError, match="uncommitted changes"):
         integrate(project, agent)
