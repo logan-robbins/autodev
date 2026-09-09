@@ -58,6 +58,10 @@ integration, or memory commands until the user asks.
   UI navigation follows Workspace → Pillar → Harness Agent. Keep Pod as an
   internal grouping; avoid duplicate scorecards above the Pillar cards.
 - `state.py`: external runtime paths and project registry.
+- `website/`: Next.js agency website for Vercel; its standalone demo assets are
+  generated from `src/autodev/web/` with `npm run demo:sync`. Edit canonical UI
+  sources first, then sync. Keep hosted demo mode isolated from runtime APIs.
+  Quote requests target info@qmachina.com; never report an email draft as sent.
 - `skills/autodev-operator/`, `skill_install.py`: canonical packaged operator
   skill and symlink installation. Preserve the runtime resolver's location logic.
 

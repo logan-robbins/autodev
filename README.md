@@ -273,3 +273,9 @@ uv build
 Tests use disposable directories and Git repositories. Native-session tests run
 fake harness executables inside real tmux sessions and never contact AI services.
 The license is MIT.
+
+## Agency website
+
+`website/` contains the Next.js agency website, its Request a Quote flow, and
+the self-contained fleet demo. Vercel uses `website` as the project root. See
+[website/README.md](website/README.md) for development and email delivery setup.
