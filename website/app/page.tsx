@@ -62,7 +62,7 @@ export default function Home() {
           </h1>
           <div className="hero-bottom">
             <p>
-              Extraordinary engineers. Relentless AI.
+              Extraordinary engineers. Relentless AI automation.
               <br />
               We build ambitious software at a fraction of the traditional cost.
             </p>
