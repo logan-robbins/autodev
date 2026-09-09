@@ -69,7 +69,8 @@ export default function Home() {
             <p>
               Extraordinary engineers. Relentless AI automation.
               <br />
-              We build ambitious software at a fraction of the traditional cost.
+              We build ambitious software at a fraction of the cost. 100%
+              On-shore team.
             </p>
             <div className="hero-actions">
               <a className="cta" href="#quote">
@@ -378,8 +379,7 @@ export default function Home() {
               <div className="operator-price">Low hourly rate</div>
               <p>
                 Experienced engineers direct the work, operate the platform, and
-                guide delivery. Operator rates and hours are scoped with your
-                project.
+                guide delivery.
               </p>
             </article>
           </div>
