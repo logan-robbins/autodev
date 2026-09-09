@@ -127,12 +127,11 @@ export default function Home() {
                     <span key={p}>
                       <span className="chip-dot" />
                       {p}
-                      <span className="chip-agents">10 ↗</span>
                     </span>
                   ))}
                 </div>
                 <div className="fleet-caption">
-                  60 Harness Agents <span>·</span> 6 Pillars
+                  Configurable engineering pods. Built to scale.
                 </div>
               </div>
               <div className="flow-connector">

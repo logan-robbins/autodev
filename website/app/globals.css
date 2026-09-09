@@ -324,11 +324,6 @@ button:focus-visible {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.chip-agents {
-  margin-left: auto;
-  font-size: 12px;
-  color: #7d976a;
-}
 .fleet-caption {
   font-size: 12px;
   color: #a0ae95;
@@ -336,9 +331,6 @@ button:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-.fleet-caption > span {
-  color: #536b43;
 }
 .preview-footer {
   display: flex;
@@ -794,9 +786,6 @@ main {
   .pillar-chips > span {
     font-size: 11px;
     padding: 8px 6px;
-  }
-  .chip-agents {
-    display: none;
   }
   .preview-footer {
     padding: 12px 15px;
