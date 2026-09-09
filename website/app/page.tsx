@@ -7,6 +7,10 @@ import {
   GitBranch,
   ShieldCheck,
   ScanLine,
+  LockKeyhole,
+  Database,
+  Cloud,
+  Unplug,
 } from 'lucide-react';
 import QuoteForm from './quote-form';
 
@@ -243,6 +247,96 @@ export default function Home() {
           </div>
         </section>
         <section
+          className="security wrap"
+          id="security"
+          aria-labelledby="security-title"
+        >
+          <div className="security-intro">
+            <div>
+              <span className="eyebrow">DATA SECURITY AND PRIVACY</span>
+              <h2 id="security-title">
+                Frontier AI.
+                <br />A controlled environment.
+              </h2>
+            </div>
+            <p>
+              Our AI clean room approach keeps development focused on code and
+              synthetic data. Real data access is a last resort, scoped with you
+              when the work requires it.
+            </p>
+          </div>
+          <figure className="clean-room" aria-labelledby="clean-room-caption">
+            <figcaption id="clean-room-caption">
+              <span>
+                <LockKeyhole size={17} aria-hidden="true" /> AUTODEV / AI CLEAN
+                ROOM
+              </span>
+              <span>Security architecture concept</span>
+            </figcaption>
+            <div className="clean-room-flow">
+              <div className="security-node">
+                <Database aria-hidden="true" />
+                <span className="mono">01 / INPUT</span>
+                <h3>Code + synthetic data</h3>
+                <p>We generate the data needed to build and test.</p>
+              </div>
+              <ArrowRight className="security-arrow" aria-hidden="true" />
+              <div className="security-node clean-room-core">
+                <LockKeyhole aria-hidden="true" />
+                <span className="mono">02 / BUILD</span>
+                <h3>AI clean room</h3>
+                <p>Engineer operators and configurable AI engineering pods.</p>
+                <span className="security-tag">Code-focused development</span>
+              </div>
+              <ArrowRight className="security-arrow" aria-hidden="true" />
+              <div className="security-node">
+                <GitBranch aria-hidden="true" />
+                <span className="mono">03 / DELIVER</span>
+                <h3>Your GitHub. Your cloud.</h3>
+                <p>
+                  Delivery through GitHub, or a secure environment we provision
+                  in your cloud. Any cloud.
+                </p>
+              </div>
+            </div>
+            <div className="security-modes">
+              <div className="connected-mode">
+                <div className="security-mode-heading">
+                  <ShieldCheck size={20} aria-hidden="true" />
+                  <h3>Controlled provider access</h3>
+                </div>
+                <div className="outbound-path">
+                  <span>Outbound connections</span>
+                  <ArrowRight size={17} aria-hidden="true" />
+                  <span className="security-layers">
+                    <ShieldCheck size={19} aria-hidden="true" /> Multiple
+                    security layers
+                  </span>
+                  <ArrowRight size={17} aria-hidden="true" />
+                  <span>
+                    <Cloud size={19} aria-hidden="true" /> AI providers
+                  </span>
+                </div>
+                <p>
+                  Layered outbound controls designed to prevent sensitive
+                  information from being shared with AI providers.
+                </p>
+              </div>
+              <div className="airgap-mode">
+                <div className="security-mode-heading">
+                  <Unplug size={20} aria-hidden="true" />
+                  <h3>100% air-gapped option</h3>
+                </div>
+                <p>
+                  Local coding models inside your environment. No outbound AI
+                  provider connections.
+                </p>
+                <span className="mono">LOCAL MODELS / OFFLINE EXECUTION</span>
+              </div>
+            </div>
+          </figure>
+        </section>
+        <section
           className="pricing wrap"
           id="pricing"
           aria-labelledby="pricing-title"
@@ -254,8 +348,8 @@ export default function Home() {
               <br />A human advantage.
             </h2>
             <p>
-              One model: software licenses for your AI fleet, plus hourly
-              engineering expertise.
+              Software licenses and hourly engineering expertise, with AI
+              subscriptions and extra token costs itemized in your quote.
             </p>
           </div>
           <div className="pricing-components">
@@ -289,9 +383,37 @@ export default function Home() {
               </p>
             </article>
           </div>
+          <div className="quote-breakdown">
+            <h3>Every quote, fully itemized.</h3>
+            <dl>
+              <div>
+                <dt>Staff &amp; hours</dt>
+                <dd>
+                  Team roles, hourly rates, estimated hours, and staffing costs.
+                </dd>
+              </div>
+              <div>
+                <dt>Software costs</dt>
+                <dd>
+                  Agent count, license duration, and software costs at $100 per
+                  agent per month.
+                </dd>
+              </div>
+              <div>
+                <dt>Extra token costs</dt>
+                <dd>
+                  Estimated additional AI token usage and its associated costs.
+                </dd>
+              </div>
+              <div>
+                <dt>AI subscriptions</dt>
+                <dd>Required AI subscription plans, quantities, and costs.</dd>
+              </div>
+            </dl>
+          </div>
           <div className="pricing-footer">
             <p>
-              Your quote combines agent licenses and engineer operator hours.
+              See the team, the platform, and the AI costs before work begins.
             </p>
             <a className="text-link" href="#quote">
               Request a quote <ArrowUpRight size={18} />
