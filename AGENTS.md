@@ -62,7 +62,7 @@ integration, or memory commands until the user asks.
   generated from `src/autodev/web/` with `npm run demo:sync`. Edit canonical UI
   sources first, then sync. Keep hosted demo mode isolated from runtime APIs.
   Quote requests target info@qmachina.com; never report an email draft as sent.
-- `skills/autodev-operator/`, `skill_install.py`: canonical packaged operator
+- `src/autodev/skills/autodev-operator/`, `skill_install.py`: canonical packaged operator
   skill and symlink installation. Preserve the runtime resolver's location logic.
 
 Authored contracts and task ledgers belong in their Pillars. Execution copies,

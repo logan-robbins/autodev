@@ -1,4 +1,4 @@
 interface:
   display_name: "Autodev Operator"
-  short_description: "Configure and supervise Autodev projects"
-  default_prompt: "Use $autodev-operator to set up and operate Autodev for this workspace and its Pillars."
+  short_description: "Operate Pillars, harness fleets, and verified delivery"
+  default_prompt: "Use $autodev-operator to inspect this workspace, configure its Pillar contracts, and operate the harness fleet through verified delivery."
