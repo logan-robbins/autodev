@@ -436,7 +436,7 @@ export default function Home() {
                 we building?
               </h2>
               <p>
-                A new product. A critical platform. The backlog that never
+                A new product. A critical platform. The&nbsp;backlog that never
                 moves.
               </p>
               <p>
