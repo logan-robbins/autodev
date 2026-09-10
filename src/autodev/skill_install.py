@@ -55,3 +55,19 @@ def install_operator_skill(*, home: Path | None = None) -> tuple[SkillLink, ...]
     return tuple(
         _install_link(client=client, destination=destination, source=source) for client, destination in destinations
     )
+
+
+def install_gm_skill(*, home: Path | None = None) -> tuple[SkillLink, ...]:
+    source = (Path(__file__).resolve().parent / "skills/autodev-gm").resolve()
+    if not (source / "SKILL.md").is_file():
+        raise RuntimeError("Packaged Autodev GM skill is missing")
+    user_home = (home or Path.home()).expanduser().resolve()
+    destinations = (
+        ("codex", user_home / ".agents/skills/autodev-gm"),
+        ("claude", user_home / ".claude/skills/autodev-gm"),
+    )
+    for client, destination in destinations:
+        _validate_destination(client=client, destination=destination, source=source)
+    return tuple(
+        _install_link(client=client, destination=destination, source=source) for client, destination in destinations
+    )

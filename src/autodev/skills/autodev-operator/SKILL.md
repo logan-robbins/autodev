@@ -103,3 +103,23 @@ recovery; use the recovery guidance instead of deleting state or weakening check
 - The local UI observes one workspace on `127.0.0.1`. Its human operator can see
   all Pillars; this does not widen agent ledger access. Runtime tokens and logs
   remain in external state. Never publish them with project outputs.
+
+## GM conversations and identity
+
+The Pillar's GM chat routes only to its native PM. `skill install --gm` installs
+the narrower [GM skill](../autodev-gm/SKILL.md); PM launch prompts reference it
+directly. The PM can answer operator questions and apply explicitly requested
+employee changes through validated `chat` commands when that message permits
+edits. This does not grant self-edit or cross-Pillar authority. Unfinished Pod
+tasks, online employees and preserved dirty employee copies block edits.
+
+Filesystem execution copies contain concrete per-agent identity in AGENTS.md and
+CLAUDE.md, followed by authored project guidance. Recovery instructions reload
+the individual template, task state and declared notes after compaction. Do not
+promise that native harnesses automatically reread changed files on every
+compaction. Every new native launch, across all roles and both execution
+profiles, also saves the full individual contract to `AUTODEV_IDENTITY_FILE`
+and installs it as Codex session developer instructions or Claude appended
+system instructions. This works without an initial task message. Git worktrees
+keep their authored files clean. Existing online sessions retain the identity
+loaded at launch; file updates do not silently reconfigure them.

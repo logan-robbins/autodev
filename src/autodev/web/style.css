@@ -2024,3 +2024,24 @@ select {
 .graph-viewport > div {
   margin-inline: auto;
 }
+
+/* Pillar operator conversation */
+.sr-only {position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.gm-chat {max-width:1000px;margin:0 auto;display:flex;flex-direction:column;min-height:60vh;overflow:hidden}
+.chat-heading {display:flex;align-items:center;gap:12px;padding:20px 24px;border-bottom:1px solid var(--line)}
+.chat-heading h2 {margin:0;font-size:16px}.chat-heading span{font-size:12px;color:var(--muted)}
+#chat-status {margin-left:auto}
+.chat-messages {padding:24px;display:flex;flex-direction:column;gap:18px;min-height:280px;max-height:55vh;overflow:auto}
+.chat-message {max-width:88%;padding:16px 20px;border-radius:12px;border:1px solid var(--line)}
+.chat-message.user {align-self:flex-end;background:#213343}.chat-message.gm {align-self:flex-start;background:var(--raised)}
+.chat-byline {font-size:12px;font-weight:650;display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
+.chat-byline time {font-weight:400;color:var(--muted)}.chat-permission{font-size:11px;color:var(--purple)}
+.chat-text {white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;font-size:14px}
+.chat-pending,.chat-empty {color:var(--muted);font-size:13px;padding:12px 0}
+.chat-composer {padding:18px 24px;border-top:1px solid var(--line);margin-top:auto}
+.chat-composer textarea{width:100%;resize:vertical;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;font:inherit;box-sizing:border-box}
+.chat-compose-actions {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
+.chat-compose-actions label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+#chat-error{color:var(--red);font-size:13px;margin-top:8px}
+.chat-change{padding:12px;background:#172f28;border-radius:8px;font-size:12px}.chat-change pre{overflow:auto;max-height:300px;white-space:pre-wrap}
+@media(max-width:640px){.chat-message{max-width:100%}.chat-heading,.chat-composer,.chat-messages{padding:16px}.chat-compose-actions{align-items:flex-start}}

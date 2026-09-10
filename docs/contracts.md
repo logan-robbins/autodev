@@ -122,3 +122,9 @@ session presence. A session being online is not proof the harness is making
 progress; the UI shows the latest reported task step and its timestamp. A running
 task whose session is offline is marked interrupted. Dependency graph edges come
 from actual task references; PM assignment-scope lines are visually distinct.
+
+The Pillar's GM chat addresses only its PM. Operator-authorized employee edits
+use the current contract digest, validate the replacement and preserve other
+agents' individual templates. Filesystem execution entrypoints carry the concrete
+assigned identity and recovery pointers as protected runtime context. See
+[GM chat and persistent identity](gm-chat.md) for the full operating contract.

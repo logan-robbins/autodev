@@ -348,6 +348,75 @@ function graph(p) {
       "",
     )}</div></div></div><div class="graph-legend"><span><i class="legend-line"></i>PM assignment scope</span><span><i class="legend-line handoff"></i>Task dependency / handoff</span><span><span class="dot green"></span> Working</span><span><span class="dot amber"></span> Needs attention</span></div></section>`;
 }
+const chatDrafts = new Map();
+let chatSignature = "";
+function chatPage(p) {
+  const gm = p.agents.find(a => a.role === "project-manager");
+  if (!gm) return empty("No General Manager", "Assign a project-manager to this Pillar to enable chat.");
+  return `<section class="panel gm-chat"><header class="chat-heading">${avatar(gm)}<div><h2>General Manager</h2><span>${esc(displayName(p.slug))} · ${esc(gm.provider === "codex" ? "Codex" : "Claude Code")}</span></div><span id="chat-status" role="status"></span></header><div id="chat-messages" class="chat-messages" role="log" aria-label="Conversation with General Manager" aria-live="polite"></div><form id="chat-form" class="chat-composer"><label class="sr-only" for="chat-text">Message General Manager</label><textarea id="chat-text" rows="3" maxlength="16000" placeholder="Ask your GM a question…" ${demo ? "disabled" : ""}></textarea><div class="chat-compose-actions"><label><input id="chat-edits" type="checkbox" ${demo ? "disabled" : ""}> Allow agent edits for this message</label><button class="button primary" id="chat-send" type="submit" ${demo ? "disabled" : ""}>Send</button></div><div id="chat-error" role="alert"></div>${demo ? '<small>Chat is unavailable in the demonstration.</small>' : ''}</form></section>`;
+}
+function bindChat(slug) {
+  chatSignature = "";
+  if (!$("chat-form") || demo) return;
+  const draft = chatDrafts.get(slug) || {text: "", allowAgentEdits: false, id: crypto.randomUUID()};
+  chatDrafts.set(slug, draft);
+  $("chat-text").value = draft.text;
+  $("chat-edits").checked = draft.allowAgentEdits;
+  const remember = () => {
+    const prior = chatDrafts.get(slug);
+    const text = $("chat-text").value, allowAgentEdits = $("chat-edits").checked;
+    const changed = text !== prior.text || allowAgentEdits !== prior.allowAgentEdits;
+    chatDrafts.set(slug, {text, allowAgentEdits, id: changed ? crypto.randomUUID() : prior.id});
+  };
+  $("chat-text").oninput = remember;
+  $("chat-edits").onchange = remember;
+  $("chat-text").onkeydown = event => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault(); $("chat-form").requestSubmit();
+    }
+  };
+  $("chat-form").onsubmit = async event => {
+    event.preventDefault();
+    const value = chatDrafts.get(slug);
+    if (!value.text.trim() || $("chat-send").disabled) return;
+    $("chat-send").disabled = true;
+    $("chat-error").textContent = "";
+    try {
+      await request(`/api/pillars/${encodeURIComponent(slug)}/chat`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(value)});
+      if (chatDrafts.get(slug).id === value.id) {
+        chatDrafts.set(slug, {text: "", allowAgentEdits: false, id: crypto.randomUUID()});
+        if (route().parts[1] === slug && $("chat-text")) { $("chat-text").value = ""; $("chat-edits").checked = false; }
+      }
+      await refreshChat();
+    } catch (error) { if ($("chat-error")) $("chat-error").textContent = error.message; }
+    finally { if ($("chat-send")) $("chat-send").disabled = false; }
+  };
+  refreshChat();
+}
+async function refreshChat() {
+  const parts = route().parts;
+  if (demo || parts[0] !== "pillar" || parts[2] !== "chat" || !$("chat-messages")) return;
+  const slug = parts[1];
+  try {
+    const conversation = await request(`/api/pillars/${encodeURIComponent(slug)}/chat`);
+    if (route().parts[1] !== slug || !$("chat-messages")) return;
+    $("chat-status").textContent = conversation.online ? "Online" : "Offline · starts on message";
+    const signature = JSON.stringify([conversation.online, conversation.messages]);
+    if (signature === chatSignature) return;
+    chatSignature = signature;
+    const box = $("chat-messages");
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    box.innerHTML = conversation.messages.length ? conversation.messages.map(m => `<article class="chat-message user"><div class="chat-byline">You <time>${esc(new Date(m.createdAt).toLocaleTimeString())}</time>${m.allowAgentEdits ? '<span class="chat-permission">Agent edits allowed</span>' : ''}</div><div class="chat-text">${esc(m.text)}</div></article>${m.changes.map(c => `<details class="chat-change"><summary>Updated ${esc(displayName(c.agent.split('--')[1]))}: ${esc(c.fields.join(', '))}</summary><pre>${esc(JSON.stringify({before: c.before, after: c.after}, null, 2))}</pre></details>`).join('')}${m.reply ? `<article class="chat-message gm"><div class="chat-byline">General Manager <time>${esc(new Date(m.reply.createdAt).toLocaleTimeString())}</time></div><div class="chat-text">${esc(m.reply.text)}</div></article>` : `<div class="chat-pending" role="status">${esc(m.error || ({queued:'Queued for GM',sending:'Connecting to GM…',sent:conversation.online ? 'Waiting for GM reply…' : 'GM is offline; reply pending',error:'Delivery failed'}[m.status]))}${['error','sending'].includes(m.status) || (m.status === 'sent' && !conversation.online) ? ` <button class="button" data-retry-chat="${esc(m.id)}">Resume delivery</button>` : ''}</div>`}`).join('') : '<div class="chat-empty">Ask about this pillar’s work, decisions, or agents.</div>';
+    box.querySelectorAll('[data-retry-chat]').forEach(button => button.onclick = async () => {
+      button.disabled = true;
+      try { await request(`/api/pillars/${encodeURIComponent(slug)}/chat`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:button.dataset.retryChat,retry:true})}); await refreshChat(); }
+      catch(error) { $("chat-error").textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  } catch(error) { if ($("chat-error")) $("chat-error").textContent = error.message; }
+}
+
 function pillarPage(slug, tab = "graph") {
   const p = data.pillars.find((p) => p.slug === slug);
   if (!p)
@@ -357,11 +426,12 @@ function pillarPage(slug, tab = "graph") {
     );
   const tabs = [
     ["graph", "graph", "Agent graph"],
+    ["chat", "agents", "GM chat"],
     ["board", "board", "Task board"],
     ["agents", "agents", "Agent list"],
     ["contract", "file", "Contract"],
   ];
-  return `<div class="page-heading"><div><div class="pillar-title"><span class="pillar-symbol" style="--pillar-color:${colors[data.pillars.indexOf(p) % colors.length]}">${icon("grid")}</span><div><h1>${esc(displayName(p.slug))}</h1><p class="subtitle">${esc(p.summary)}</p></div></div><div class="pillar-meta">${badge(p.status)}<span>${p.online} / ${p.agents.length} Harness Agents online</span><span>${p.counts.open} open tasks</span></div></div></div><nav class="tabs" aria-label="Pillar views">${tabs.map(([key, i, label]) => `<a class="tab ${key === tab ? "selected" : ""}" href="#pillar/${p.slug}/${key}" ${key === tab ? 'aria-current="page"' : ""}>${icon(i)}${label}</a>`).join("")}</nav>${p.error ? `<div class="alert-note">Ledger unavailable: ${esc(p.error)}. Counts are incomplete.</div>` : ""}${tab === "graph" ? graph(p) : tab === "board" ? section("Task board", "", filters("Search tasks or agents…", false)) + board(p.tasks) : tab === "agents" ? section("Harness Agents", "", filters("Search agents…", false)) + agentTable(p.agents) : contract(p)}`;
+  return `<div class="page-heading"><div><div class="pillar-title"><span class="pillar-symbol" style="--pillar-color:${colors[data.pillars.indexOf(p) % colors.length]}">${icon("grid")}</span><div><h1>${esc(displayName(p.slug))}</h1><p class="subtitle">${esc(p.summary)}</p></div></div><div class="pillar-meta">${badge(p.status)}<span>${p.online} / ${p.agents.length} Harness Agents online</span><span>${p.counts.open} open tasks</span></div></div></div><nav class="tabs" aria-label="Pillar views">${tabs.map(([key, i, label]) => `<a class="tab ${key === tab ? "selected" : ""}" href="#pillar/${p.slug}/${key}" ${key === tab ? 'aria-current="page"' : ""}>${icon(i)}${label}</a>`).join("")}</nav>${p.error ? `<div class="alert-note">Ledger unavailable: ${esc(p.error)}. Counts are incomplete.</div>` : ""}${tab === "chat" ? chatPage(p) : tab === "graph" ? graph(p) : tab === "board" ? section("Task board", "", filters("Search tasks or agents…", false)) + board(p.tasks) : tab === "agents" ? section("Harness Agents", "", filters("Search agents…", false)) + agentTable(p.agents) : contract(p)}`;
 }
 function contract(p) {
   return `<div class="contract-grid"><section class="panel"><div class="panel-body"><div class="small-label">Responsibility</div><h3>${esc(displayName(p.slug))}</h3><p>${esc(p.responsibility)}</p><div class="divider"></div><div class="small-label">How to consume</div><p>${esc(p.consumption)}</p><div class="divider"></div><div class="small-label">Constraints</div><p>${esc(p.constraints)}</p></div></section><section class="panel"><div class="panel-body"><div class="small-label">Public interface</div>${badge("ready", p.interface_state)}<code class="file-path">${esc(p.slug)}/pillar.toml</code><div class="divider"></div><div class="small-label">Declared outputs</div>${p.outputs.map((o) => `<p>${esc(o.description)}</p><code class="file-path">${esc(p.slug + "/" + o.path)} · ${esc(o.format)}</code>`).join("")}<div class="divider"></div><div class="small-label">Consumes</div>${p.dependencies.map((d) => `<a class="task-link" href="#pillar/${d}/contract">${icon("link")}${esc(displayName(d))}${icon("arrow")}</a>`).join("") || "<p>No peer dependencies declared.</p>"}</div></section></div>`;
@@ -587,7 +657,7 @@ function render(force = false) {
   const boardScroll = document.querySelector(".board-wrap")?.scrollLeft;
   const focused = document.activeElement?.id;
   const selection = focused === "search" ? $("search").selectionStart : null;
-  if (parts[0] !== "settings" || changed || force) {
+  if ((parts[0] !== "settings" && !(parts[0] === "pillar" && parts[2] === "chat")) || changed || force) {
     $("content").innerHTML =
       parts[0] === "pillar"
         ? pillarPage(parts[1], parts[2] || "graph")
@@ -600,6 +670,7 @@ function render(force = false) {
               : parts[0] === "settings"
                 ? settingsPage()
                 : overview();
+    if (parts[0] === "pillar" && parts[2] === "chat") bindChat(parts[1]);
     if (parts[0] === "settings") {
       const slug = r.params.get("pillar");
       if (slug && data.pillars.some((p) => p.slug === slug))
@@ -882,6 +953,7 @@ $("refresh").onclick = () => {
 window.addEventListener("hashchange", () => render());
 async function poll() {
   await refresh();
+  await refreshChat();
   setTimeout(poll, 2000);
 }
 if (boot.demoOnly || new URL(location.href).searchParams.get("demo") === "1") {

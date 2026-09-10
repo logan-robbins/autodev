@@ -19,6 +19,11 @@ model. Memory is explicitly deferred at the user's request.
 | Session | A running native harness incarnation in its own tmux session, with an explicit actor and canonical project identity. |
 | Orchestrator | The user-facing control-plane conversation. It establishes Pillars and their public contracts and coordinates the overall project. It does not replace workers' ledger loops. |
 
+Every newly launched native session receives its configured Harness Agent's full
+standing identity through native instructions, independently of the opening task
+message. This applies to every role and both execution profiles. See
+[Harness Agent identity](harness-identity.md).
+
 ## Invariants
 
 - Pillars are direct children and peers. No departments, intermediate hierarchy,

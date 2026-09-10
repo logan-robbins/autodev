@@ -27,7 +27,7 @@ from autodev.providers import ProviderError, version
 from autodev.scaffold import create_pillar, create_workspace
 from autodev.service import serve_project
 from autodev.sessions import SessionError, send_goal
-from autodev.skill_install import install_operator_skill
+from autodev.skill_install import install_gm_skill, install_operator_skill
 from autodev.state import Registry, autodev_home
 from autodev.task_plans import import_plan
 from autodev.tasks import TaskStore
@@ -217,6 +217,22 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "import":
             operation.add_argument("path", type=Path)
 
+    chat = subparsers.add_parser("chat", help="GM-only operator conversations and requested agent edits")
+    chat_commands = chat.add_subparsers(dest="chat_command", required=True)
+    for name in ("inbox", "reply", "agent", "edit-agent"):
+        operation = chat_commands.add_parser(name)
+        _add_project_argument(operation, required=True)
+        operation.add_argument("--actor", default=os.environ.get("AUTODEV_AGENT_ID"))
+        if name == "reply":
+            operation.add_argument("message_id")
+            operation.add_argument("--text-file", type=Path, required=True)
+        if name in {"agent", "edit-agent"}:
+            operation.add_argument("agent")
+        if name == "edit-agent":
+            operation.add_argument("--request", required=True)
+            operation.add_argument("--expected-digest", required=True)
+            operation.add_argument("--patch-file", type=Path, required=True)
+
     setup = subparsers.add_parser(
         "setup",
         help="interactively configure, register, and optionally launch a project",
@@ -225,7 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     skill = subparsers.add_parser("skill", help="manage the repository-owned operator skill")
     skill_commands = skill.add_subparsers(dest="skill_command", required=True)
-    skill_commands.add_parser("install", help="link the operator skill into Codex and Claude Code")
+    skill_commands.add_parser("install", help="link an Autodev skill into Codex and Claude Code").add_argument(
+        "--gm", action="store_true"
+    )
 
     validate = subparsers.add_parser("validate", help="validate a project descriptor and local base branch")
     _add_project_argument(validate)
@@ -291,7 +309,7 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
     if args.command == "skill":
         if args.skill_command != "install":
             raise AssertionError(f"unhandled skill command: {args.skill_command}")
-        for link in install_operator_skill():
+        for link in install_gm_skill() if args.gm else install_operator_skill():
             state = "installed" if link.created else "already installed"
             print(f"{link.client}: {state} {link.path} -> {link.source}")
         return 0
@@ -408,6 +426,32 @@ def run(args: argparse.Namespace, *, registry: Registry | None = None) -> int:
                 if not TaskStore(project, agent).active() and any(t["agent"] == agent.id and t["ready"] for t in tasks)
             )
             result = ensure_agents(project, ready, base_ref=None, start=True, send_initial_goal=True)
+        _print_json({"result": result})
+        return 0
+    if args.command == "chat":
+        from autodev.chat import ChatStore, agent_configuration, check_actor, edit_agent
+
+        if not args.actor:
+            raise ConfigError("Chat operations require the GM actor")
+        actor = project.agent(args.actor)
+        check_actor(project, actor)
+        store = ChatStore(project, actor.pillar)
+        if args.chat_command == "inbox":
+            result = store.snapshot()
+            result["messages"] = result["messages"][-20:]
+        elif args.chat_command == "reply":
+            result = store.reply(args.message_id, args.text_file.read_text(encoding="utf-8"))
+        elif args.chat_command == "agent":
+            result = agent_configuration(project, actor, args.agent)
+        else:
+            result = edit_agent(
+                project,
+                actor,
+                args.agent,
+                args.request,
+                args.expected_digest,
+                json.loads(args.patch_file.read_text(encoding="utf-8")),
+            )
         _print_json({"result": result})
         return 0
     if args.command == "ui":

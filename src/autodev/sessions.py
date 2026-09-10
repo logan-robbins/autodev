@@ -5,7 +5,9 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -86,16 +88,31 @@ def session_exists(name: str) -> bool:
 
 
 def send_goal(project: ProjectConfig, agent: AgentConfig, *, dry_run: bool = False) -> str:
+    prompt = render_goal(project, agent)
+    if not dry_run:
+        send_prompt(project, agent, prompt)
+    return prompt
+
+
+def send_prompt(project: ProjectConfig, agent: AgentConfig, prompt: str) -> None:
+    """Transport literal user/contract text to the existing native harness."""
     name = session_name(project, agent)
-    if dry_run:
-        return render_goal(project, agent)
     if not session_exists(name):
         raise SessionError(f"tmux session {name!r} is not running; run `autodev ensure` first")
-    prompt = render_goal(project, agent)
-    _tmux("send-keys", "-t", name, "-l", prompt)
+    paths = project_paths(project.id)
+    paths.home.mkdir(parents=True, exist_ok=True)
+    # tmux command messages have a size limit; transfer long contracts as data.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=paths.home) as stream:
+        stream.write(prompt)
+        stream.flush()
+        buffer = f"autodev-{uuid.uuid4().hex}"
+        _tmux("load-buffer", "-b", buffer, stream.name)
+        try:
+            _tmux("paste-buffer", "-p", "-b", buffer, "-t", name)
+        finally:
+            _tmux("delete-buffer", "-b", buffer)
     time.sleep(0.2)
     _tmux("send-keys", "-t", name, "C-m")
-    return prompt
 
 
 def start_session(
@@ -104,19 +121,35 @@ def start_session(
     workspace: Workspace,
     *,
     send_initial_goal: bool,
+    initial_prompt: str | None = None,
 ) -> bool:
     """Start one session and return True, or return False when it already exists."""
     name = session_name(project, agent)
     if session_exists(name):
         return False
     provider = project.providers[agent.provider]
-    prompt = render_goal(project, agent) if send_initial_goal else None
+    from autodev.identity import save_session_identity
+
+    identity_file = save_session_identity(project, agent)
+    prompt = (
+        initial_prompt if initial_prompt is not None else render_goal(project, agent) if send_initial_goal else None
+    )
     command = launch_command(
         provider,
         workspace.path,
         bypass_permissions=project.bypass_permissions,
         initial_prompt=prompt,
+        identity_file=identity_file,
     )
+    paths = project_paths(project.id)
+    launchers = paths.home / "launchers"
+    launchers.mkdir(parents=True, exist_ok=True)
+    launcher = launchers / f"{agent.id}.sh"
+    # shlex quotes every argument, including arbitrary prompt content. The file
+    # preserves native CLI startup without embedding the prompt in a tmux message.
+    with launcher.open("w", encoding="utf-8") as stream:
+        launcher.chmod(0o700)
+        stream.write("#!/bin/sh\nexec " + shlex.join(command) + "\n")
     _tmux(
         "new-session",
         "-d",
@@ -128,12 +161,13 @@ def start_session(
         f"AUTODEV_PROJECT_DESCRIPTOR={project.descriptor}",
         "-e",
         f"AUTODEV_HOME={autodev_home()}",
+        "-e",
+        f"AUTODEV_IDENTITY_FILE={identity_file}",
         "-c",
         str(workspace.path),
-        shlex.join(command),
+        shlex.join(["/bin/sh", str(launcher)]),
     )
 
-    paths = project_paths(project.id)
     paths.logs.mkdir(parents=True, exist_ok=True)
     log_path = paths.logs / f"{agent.id}.log"
     _tmux(

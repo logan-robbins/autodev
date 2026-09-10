@@ -293,6 +293,10 @@ def copy_agent_workspace(project: ProjectConfig, agent: AgentConfig, target: Pat
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination, follow_symlinks=False)
 
+    from autodev.identity import write_identity
+
+    write_identity(project, agent, target)
+
 
 def ensure_file_workspace(project: ProjectConfig, agent: AgentConfig, *, home: Path | None = None) -> Workspace:
     destination = workspace_path(project, agent, home=home)

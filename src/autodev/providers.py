@@ -51,6 +51,7 @@ def launch_command(
     *,
     bypass_permissions: bool,
     initial_prompt: str | None,
+    identity_file: Path | None = None,
 ) -> list[str]:
     """Build one interactive host-CLI command without installing or wrapping it."""
     executable = executable_path(provider.command)
@@ -62,6 +63,10 @@ def launch_command(
             command.extend(["--config", f"model_reasoning_effort={json.dumps(provider.effort)}"])
         if bypass_permissions:
             command.append("--dangerously-bypass-approvals-and-sandbox")
+        if identity_file is not None:
+            command.extend(
+                ["--config", "developer_instructions=" + json.dumps(identity_file.read_text(encoding="utf-8"))]
+            )
     elif provider.name == "claude":
         command = [executable]
         if provider.model:
@@ -70,6 +75,8 @@ def launch_command(
             command.extend(["--effort", provider.effort])
         if bypass_permissions:
             command.append("--dangerously-skip-permissions")
+        if identity_file is not None:
+            command.extend(["--append-system-prompt", identity_file.read_text(encoding="utf-8")])
     else:  # Config validation should make this unreachable.
         raise ProviderError(f"unsupported provider: {provider.name}")
 

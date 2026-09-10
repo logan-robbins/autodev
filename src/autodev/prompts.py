@@ -38,6 +38,12 @@ def render_goal(project: ProjectConfig, agent: AgentConfig) -> str:
         else "Read only your own task ledger. Your Pod's Project Manager, when assigned, tends your task assignments. "
         "You are responsible for reading your tasks, delivering the declared outputs, and updating your own task state."
     )
+    if store.manager:
+        role += (
+            "\nAt startup and after compaction, read the GM skill: "
+            + str(Path(__file__).parent / "skills/autodev-gm/SKILL.md")
+            + ". Its runtime procedures supplement your individually configured template."
+        )
     tasks = [t for t in store.list() if t["status"] != "completed"]
     # A small initial view; agents use ledger commands to retrieve additional tasks.
     preview = json.dumps(tasks[:8], ensure_ascii=False)

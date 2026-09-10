@@ -7,6 +7,7 @@ import os
 import secrets
 import subprocess
 import tempfile
+import threading
 from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from autodev.chat import ChatStore
 from autodev.config import ConfigError, ProjectConfig, load_project
 from autodev.fleet import FleetMonitor, agent_output
 from autodev.integrate import integrate
@@ -185,6 +187,10 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
             project = self._project()
+            if path.startswith("/api/pillars/") and path.endswith("/chat") and len(path.split("/")) == 5:
+                if self._authorized():
+                    self._json(HTTPStatus.OK, ChatStore(project, path.split("/")[3]).snapshot())
+                return
             if path.startswith("/api/agents/") and path.endswith("/output"):
                 if self._authorized():
                     self._json(HTTPStatus.OK, agent_output(project, path.split("/")[3]))
@@ -237,6 +243,19 @@ class ProjectUIHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parts = urlparse(self.path).path.rstrip("/").split("/")
+        if len(parts) == 5 and parts[1:3] == ["api", "pillars"] and parts[4] == "chat":
+            try:
+                body = self._body()
+                store = ChatStore(self._project(), parts[3])
+                if body.get("retry"):
+                    store.retry(body["id"])
+                    result = {"resumed": True}
+                else:
+                    result = store.add(body.get("id"), body.get("text"), body.get("allowAgentEdits", False))
+                self._json(HTTPStatus.ACCEPTED, {"result": result})
+            except (ConfigError, OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
         if len(parts) != 4 or parts[1:3] != ["api", "actions"]:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -301,7 +320,23 @@ def serve_project(project: ProjectConfig) -> None:
     server.daemon_threads = True
     print(f"Autodev UI for {project.name}: http://{LOOPBACK_HOST}:{project.ui_port}/", flush=True)
     print(f"Project UI token: {project_paths(project.id).home / 'ui-token'}", flush=True)
+    shutdown = threading.Event()
+
+    def deliver_messages() -> None:
+        while not shutdown.wait(1):
+            try:
+                current = load_project(project.descriptor)
+                for pillar in current.pillars:
+                    if any(a.role == "project-manager" for a in pillar.agents):
+                        ChatStore(current, pillar.slug).deliver()
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(f"autodev chat: {exc}", flush=True)
+
+    dispatcher = threading.Thread(target=deliver_messages, daemon=True)
+    dispatcher.start()
     try:
         server.serve_forever()
     finally:
+        shutdown.set()
         server.server_close()
+        dispatcher.join(timeout=2)

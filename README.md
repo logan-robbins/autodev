@@ -259,6 +259,13 @@ Codex and Claude skill directories. It refuses to replace existing incompatible
 paths. The user's current conversation is the Orchestrator; it coordinates
 Pillars and interfaces, while PM harnesses tend their Pod's individual ledgers.
 
+Each Pillar with a PM also has a **GM chat** tab for direct operator questions and
+explicitly requested employee changes within that Pillar. Install the scoped GM
+skill with `uv run autodev skill install --gm`. Filesystem execution copies retain
+each agent's identity in native `AGENTS.md`/`CLAUDE.md` entrypoints. See
+[GM chat and persistent identity](docs/gm-chat.md) for delivery, edit boundaries
+and compaction recovery behavior.
+
 ## Development
 
 ```sh
