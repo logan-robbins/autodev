@@ -74,11 +74,6 @@ export default function Home() {
             No upfront payment. Pay at UAT milestones.
             <sup aria-hidden="true">*</sup>
           </p>
-          <p className="hero-prop-note">
-            <sup>*</sup> Hours and scope are agreed ahead of time. Invoices at
-            Autodev-defined UAT acceptance for that scoped work. Change orders
-            are quoted before start.
-          </p>
           <div className="hero-bottom">
             <p>
               Extraordinary engineers. Relentless AI automation.
@@ -469,6 +464,11 @@ export default function Home() {
           </div>
         </section>
       </main>
+      <p className="hero-prop-note legal-prop-note wrap">
+        <sup>*</sup> Hours and scope are agreed ahead of time. Invoices at
+        Autodev-defined UAT acceptance for that scoped work. Change orders
+        are quoted before start.
+      </p>
       <footer className="site-footer wrap">
         <Link className="wordmark" href="/" aria-label="autodev team home">
           <span className="brand-name">

@@ -1312,3 +1312,9 @@ main {
 .hero-prop-note sup {
   margin-right: 0.15rem;
 }
+
+.legal-prop-note {
+  margin: 2.5rem auto 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--muted, #9aa3a0) 25%, transparent);
+}
