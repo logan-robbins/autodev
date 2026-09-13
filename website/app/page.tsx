@@ -50,6 +50,7 @@ export default function Home() {
           </span>
         </Link>
         <nav aria-label="Main navigation">
+          <a href="/blog">Blog</a>
           <a href="#approach">Our approach</a>
           <a href="/demo/index.html?demo=1" target="_blank" rel="noreferrer">
             Platform demo <ArrowUpRight size={15} />
