@@ -8,20 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog" },
 };
 
-const posts = [
-  {
-    slug: "chatgpt-for-finance-wont-kill-the-staffing-cut",
-    title: "ChatGPT for Finance is a seat. The staffing firms will mark it up.",
-    description:
-      "OpenAI sold banks a tailored ChatGPT Work. That’s not capacity — kill the middlemen.",
-  },
-  {
-    slug: "cursor-projects-wont-kill-staffing-agencies",
-    title: "Cursor shipped Projects. Staffing agencies still take the cut.",
-    description:
-      "Coordinator agents are a better IDE, not a replacement for elite onshore capacity.",
-  },
-];
+const posts: { slug: string; title: string; description: string }[] = [];
 
 export default function BlogIndex() {
   return (
