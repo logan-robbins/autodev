@@ -1,0 +1,16 @@
+{
+  "tweet_id": "2098162488013455784",
+  "video_url": null,
+  "source_url": "https://x.com/i/web/status/2098162488013455784",
+  "duration_ms": null,
+  "transcript_path": null,
+  "gist_md_path": "/Users/loganrobbins/workspace/autodev/gtm/demand/x-ingest/2098162488013455784-gist.md",
+  "chapter_candidates": [],
+  "path": "pending_asr",
+  "tools": {
+    "ytdlp": false,
+    "ffmpeg": true,
+    "whisper": false
+  },
+  "note": "A missing (need yt-dlp + faster-whisper). B if vendor key in env. Resolve tweet media via MCP get_posts_by_id variants."
+}

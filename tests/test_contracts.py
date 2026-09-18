@@ -50,3 +50,25 @@ def test_boolean_is_not_an_integer():
 def test_schema_type_must_be_supported_single_type(value):
     with pytest.raises(ConfigError, match="supported type"):
         check_schema({"type": value})
+
+
+def test_check_context_is_explicit_and_does_not_leak(file_project, monkeypatch):
+    import os
+    import sys
+
+    from autodev.contracts import run_checks
+
+    script = file_project / "inspect_context.py"
+    script.write_text(
+        "import os,json\nfrom pathlib import Path\n"
+        "Path('context.json').write_text(json.dumps({k:v for k,v in os.environ.items() if k.startswith('AUTODEV_CHECK_')}))\n"
+    )
+    import shlex
+
+    command = shlex.join([sys.executable, str(script)])
+    monkeypatch.setenv("AUTODEV_CHECK_TASK_ID", "untrusted-inherited-value")
+    run_checks((command,), file_project, context={"AUTODEV_CHECK_TASK_ID": "runtime-assignment"})
+    assert json.loads((file_project / "context.json").read_text()) == {"AUTODEV_CHECK_TASK_ID": "runtime-assignment"}
+    run_checks((command,), file_project)
+    assert json.loads((file_project / "context.json").read_text()) == {}
+    assert os.environ["AUTODEV_CHECK_TASK_ID"] == "untrusted-inherited-value"

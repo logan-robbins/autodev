@@ -216,7 +216,7 @@ to its managed sessions. Autodev never changes global provider settings.
 Runtime copies, Git worktrees, session logs, registry, and transaction locks live
 under `AUTODEV_HOME`, otherwise `$XDG_STATE_HOME/autodev`, otherwise
 `~/.local/state/autodev`. Authored contracts and per-agent ledgers belong to their
-Pillar workspaces. Memory implementation is deliberately deferred.
+Pillar workspaces. No general memory subsystem or memory commands are provided. Projects may declare owned persistent domain artifacts as context.
 
 ## Local UI and operator skill
 
@@ -286,3 +286,5 @@ The license is MIT.
 `website/` contains the Next.js agency website, its Request a Quote flow, and
 the self-contained fleet demo. Vercel uses `website` as the project root. See
 [website/README.md](website/README.md) for development and email delivery setup.
+
+Executable agent checks receive runtime-owned canonical project, actor and active-task context before publication (see the contract reference). Native sessions transport long prompts through private runtime launch files and temporary tmux buffers, preserving literal prompt text without tmux command-size truncation.

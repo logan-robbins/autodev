@@ -75,6 +75,14 @@ vocabulary. Unknown keywords—including `$ref`, `$schema`, and `pattern`—are
 rejected. No Python dependency or network schema resolver is required. Use
 Pillar checks for a richer schema validator or domain-specific assertions.
 
+Agent validation supplies three runtime-owned environment variables to executable
+checks: `AUTODEV_CHECK_PROJECT` (canonical descriptor), `AUTODEV_CHECK_AGENT_ID`,
+and `AUTODEV_CHECK_TASK_ID` (the active assignment, or empty outside a claimed
+task). Checks can bind outputs to the actual assignment before publication.
+Plain Pillar/interface verification removes this context, including inherited
+values, and validates the public contract independently. Checks are trusted
+project code; these values do not create a host security sandbox.
+
 ## Task plans and ledgers
 
 The Project Manager's task plan has `status = "planned"`, a `summary`, and

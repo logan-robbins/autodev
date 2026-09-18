@@ -6,6 +6,7 @@ Unsupported schema keywords fail validation; they are never silently ignored.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -148,12 +149,22 @@ def verify_artifact(root: Path, artifact: ArtifactSpec, *, fixture: bool = False
     return {"id": artifact.id, "path": str(path), "format": artifact.format}
 
 
-def run_checks(commands: tuple[str, ...], root: Path) -> None:
+def run_checks(commands: tuple[str, ...], root: Path, *, context: dict[str, str] | None = None) -> None:
+    # Check context is supplied by the runtime, never inherited from a prior check.
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("AUTODEV_CHECK_")}
+    environment.update(context or {})
     for command in commands:
         command = command.replace("{python}", shlex.quote(sys.executable))
         try:
             result = subprocess.run(
-                command, shell=True, cwd=root, text=True, capture_output=True, timeout=300, check=False
+                command,
+                shell=True,
+                cwd=root,
+                text=True,
+                capture_output=True,
+                timeout=300,
+                check=False,
+                env=environment,
             )
         except subprocess.TimeoutExpired as exc:
             raise ConfigError(f"contract check timed out: {command}") from exc
@@ -175,6 +186,14 @@ def verify_pillar(
 
 
 def verify_agent(project: ProjectConfig, agent: AgentConfig, workspace: Path) -> list[dict[str, str]]:
+    from autodev.tasks import TaskStore
+
+    active = TaskStore(project, agent).active()
+    context = {
+        "AUTODEV_CHECK_PROJECT": str(project.descriptor),
+        "AUTODEV_CHECK_AGENT_ID": agent.id,
+        "AUTODEV_CHECK_TASK_ID": active["id"] if active else "",
+    }
     results = [verify_artifact(workspace / agent.pillar, artifact) for artifact in agent.deliverables]
     for artifact in agent.deliverables:
         if artifact.format == "application/json":
@@ -183,7 +202,7 @@ def verify_agent(project: ProjectConfig, agent: AgentConfig, workspace: Path) ->
                 raise ConfigError(
                     "a blocked or unavailable result cannot complete a task; update the ledger with task block"
                 )
-    run_checks(project.verify_commands, workspace)
+    run_checks(project.verify_commands, workspace, context=context)
     pillar = project.pillar(agent.pillar)
-    run_checks(pillar.checks, workspace / pillar.slug)
+    run_checks(pillar.checks, workspace / pillar.slug, context=context)
     return results

@@ -82,7 +82,7 @@ Worker loop:
 2. Claim your next ready task: {command} task claim {selected} --actor {actor}
    Read its instructions and acceptance criteria. If no task is ready, report that you are idle or blocked; do not invent an assignment.
 3. Discover the current workspace and public interfaces. Modify only the owned write roots. Treat raw source data as immutable unless your task explicitly authorizes changes.
-4. Build and verify the interface first. Fixtures and unavailable responses support interface development; never present them as completed business functionality.
+4. Use the declared interfaces and verify your assigned outcome. Build or change implementation only when the assignment calls for it. Fixtures support interface development; never present them as completed business functionality.
    Report meaningful work steps with: {command} task progress {selected} TASK_ID --actor {actor} --message "Current step and outcome"
 5. Deliver the exact required artifacts and verify the task's acceptance criteria. {completion}
 6. Update your ledger by running: {command} task complete {selected} TASK_ID --actor {actor}
@@ -92,5 +92,5 @@ Worker loop:
 8. Read your ledger again and continue with the next ready task. {"Review your Pod's ledgers to coordinate assignments and dependencies." if store.manager else "Keep other workers' ledgers out of your context."}
 
 Use ledger commands for atomic updates; never edit ledger storage directly. Contract and template files are maintained separately from task execution.
-Memory implementation is deferred.
+Persistent project context is supplied through declared artifacts; do not invent additional storage or memory systems.
 """
